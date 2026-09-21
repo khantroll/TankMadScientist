@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Tank — Dashboard{% endblock %}
+{% block content %}
+  <div class="dashboard-layout">
+    <div class="panel">
+      <h3>New workspace</h3>
+      {% if error %}
+        <p class="form-error">{{ error }}</p>
+      {% endif %}
+      <form action="{{ url_for('create_workspace') }}" method="post">
+        <label for="ws-name">Name</label>
+        <input type="text" name="name" id="ws-name" required
+               value="{{ form.name or '' }}" placeholder="My project">
+
+        <label for="ws-slug">Slug (optional)</label>
+        <input type="text" name="slug" id="ws-slug"
+               value="{{ form.slug or '' }}" placeholder="my-project">
+
+        <label for="ws-repo-path">Repository path</label>
+        <input type="text" name="repo_path" id="ws-repo-path" required
+               value="{{ form.repo_path or '' }}" placeholder="D:/projects/my-project">
+
+        <label for="ws-git-remote">Git remote (optional)</label>
+        <input type="text" name="git_remote" id="ws-git-remote"
+               value="{{ form.git_remote or '' }}" placeholder="git@host:user/repo.git">
+
+        <label for="ws-default-provider">Default provider (optional)</label>
+        <select name="default_provider" id="ws-default-provider">
+          <option value="">— use global default —</option>
+          {% for pid, label in providers %}
+            <option value="{{ pid }}"
+              {% if pid == form.default_provider %}selected{% endif %}>
+              {{ label }}
+            </option>
+          {% endfor %}
+        </select>
+
+        <button class="btn" type="submit">Create workspace</button>
+      </form>
+      <p class="form-hint">Saved to <code>workspaces.yaml</code> and synced to the database.</p>
+    </div>
+
+    <div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <h3 style="color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.05em; margin:0;">
+          Workspaces
+        </h3>
+        <form action="{{ url_for('reload_config') }}" method="post">
+          <button class="btn btn-quiet" type="submit">Reload config</button>
+        </form>
+      </div>
+
+      <div id="workspace-cards"
+           hx-get="{{ url_for('workspace_cards_partial') }}"
+           hx-trigger="every 3s"
+           hx-swap="innerHTML">
+        {% include "partials/workspace_cards.html" %}
+      </div>
+      <p class="form-hint" style="margin-top:12px;">
+        Tank {{ tank_version }}
+        · verify:
+        <a href="{{ url_for('api_version') }}" target="_blank" rel="noopener">/api/version</a>
+        (should list <code>cancel_run</code> and <code>delete_workspace</code>)
+      </p>
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Tank — {{ workspace.name }}{% endblock %}
+{% block content %}
+  <p style="margin-top:-6px;"><a href="{{ url_for('dashboard') }}" style="color:var(--text-muted); font-size:13px; text-decoration:none;">← Dashboard</a></p>
+  <h2 style="margin:4px 0 2px;">{{ workspace.name }}</h2>
+  <div class="repo-path" style="margin-bottom:8px;">{{ workspace.repo_path }}</div>
+  {% if repo_error %}
+    <p class="form-error" style="margin-bottom:16px;">{{ repo_error }}</p>
+  {% endif %}
+  {% if delete_error %}
+    <p class="form-error" style="margin-bottom:16px;">{{ delete_error }}</p>
+  {% endif %}
+  <div class="workspace-header-actions">
+    <form action="{{ url_for('delete_workspace', slug=workspace.slug) }}" method="post" class="inline-form"
+          onsubmit="return confirm('Delete workspace {{ workspace.name }}? All runs, roles, and missions for it will be removed.');">
+      <button class="btn btn-cancel" type="submit">Delete workspace</button>
+    </form>
+  </div>
+
+  <div class="workspace-layout">
+    <div>
+      <div class="panel">
+        <h3>Missions</h3>
+        <div id="mission-list"
+             hx-get="{{ url_for('mission_list_partial', slug=workspace.slug) }}"
+             hx-trigger="every 4s" hx-swap="innerHTML settle:0">
+          {% include "partials/mission_list.html" with context %}
+        </div>
+        {% if mission_error %}
+          <p class="form-error">{{ mission_error }}</p>
+        {% endif %}
+        <form hx-post="{{ url_for('start_mission', slug=workspace.slug) }}"
+              hx-target="#mission-list" hx-swap="innerHTML" style="margin-top:10px;">
+          <label for="template_id">Mission template</label>
+          <select name="template_id" id="template_id">
+            {% for tid, label in mission_templates %}
+              <option value="{{ tid }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+          <label for="mission_provider">Model / provider</label>
+          <select name="provider" id="mission_provider">
+            {% for pid, label in providers %}
+              <option value="{{ pid }}"
+                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+          <p class="form-hint">Used for every stage in this mission. Pick a <em>Tank-controlled</em> agent (e.g. OpenRouter agent, Mistral agent) so build/fix stages can propose patches.</p>
+          <label for="goal">Goal</label>
+          <textarea name="goal" id="goal" placeholder="What should this mission accomplish end to end?" required></textarea>
+          <p class="form-hint">Tank will run the plan → build → test stages on its own. Every actual file change still waits for your approval below, including each fix-loop attempt.</p>
+          <button class="btn" type="submit">Start mission</button>
+        </form>
+        <div id="mission-form-error"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Start Mad Scientist Mission</h3>
+        <form hx-post="{{ url_for('start_mad_scientist', slug=workspace.slug) }}"
+              hx-target="#mission-list"
+              hx-swap="innerHTML">
+          <label for="mad_provider">Model / provider</label>
+          <select name="mad_provider" id="mad_provider">
+            {% for pid, label in providers %}
+              <option value="{{ pid }}"
+                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+
+          <label for="mad_goal">Goal</label>
+          <textarea name="mad_goal" id="mad_goal"
+                    placeholder="Describe the broad thing Tank should scout, plan, build, and verify."
+                    required></textarea>
+
+          <div class="form-row">
+            <div>
+              <label for="mad_max_steps">Max steps</label>
+              <input type="number" name="mad_max_steps" id="mad_max_steps" min="1" max="12" value="6">
+            </div>
+            <div>
+              <label for="mad_max_fix_loops">Fix loops</label>
+              <input type="number" name="mad_max_fix_loops" id="mad_max_fix_loops" min="0" max="6" value="3">
+            </div>
+          </div>
+
+          <p class="form-hint">Tank starts with a scout, generates a JSON execution plan, then queues concrete child runs under one parent. File changes still wait for approval.</p>
+          <button class="btn" type="submit">Start Mad Scientist Mission</button>
+        </form>
+        <div id="mad-scientist-error"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Launch a task</h3>
+        {% if error %}
+          <p class="form-error">{{ error }}</p>
+        {% endif %}
+        <form hx-post="{{ url_for('create_run', slug=workspace.slug) }}"
+              hx-target="#run-list" hx-swap="innerHTML">
+          <label for="role_id">Agent role</label>
+          <select name="role_id" id="role_id">
+            <option value="">— general task —</option>
+            {% for role in roles %}
+              <option value="{{ role.id }}">{{ role.name }}</option>
+            {% endfor %}
+          </select>
+          <label for="provider">Model / provider</label>
+          <select name="provider" id="provider">
+            {% for pid, label in providers %}
+              <option value="{{ pid }}"
+                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+          <label for="parent_run_id">Continue from run</label>
+          <select name="parent_run_id" id="parent_run_id">
+            <option value="">— none (auto if task mentions prior run) —</option>
+            <option value="latest">Latest completed run</option>
+            {% for prior in chainable_runs %}
+              <option value="{{ prior.id }}">
+                #{{ prior.id }} — {{ prior.task[:70] }}{% if prior.task|length > 70 %}…{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+          <p class="form-hint">Chain prior output into this run. Tasks mentioning "previous audit" auto-chain when none is selected.</p>
+          <label for="task">Task</label>
+          <textarea name="task" id="task" placeholder="What should this agent do?" required></textarea>
+          <button class="btn" type="submit">Queue run</button>
+        </form>
+        <div id="run-form-error"></div>
+      </div>
+
+      {# ── Crew Orchestrator Builder ──────────────────────────────────────── #}
+      <div class="panel">
+        <h3>Crew Orchestrator</h3>
+        <p class="form-hint" style="margin-top:-4px; margin-bottom:10px;">
+          Build a multi-agent pipeline on the fly. Each step runs sequentially,
+          threading context into the next.
+        </p>
+
+        <form hx-post="{{ url_for('launch_crew', slug=workspace.slug) }}"
+              hx-target="#run-list"
+              hx-swap="innerHTML">
+
+          <label for="crew_task">Crew task</label>
+          <textarea name="crew_task" id="crew_task"
+                    placeholder="What should this crew accomplish end to end?"
+                    required></textarea>
+
+          <div class="crew-builder-header">
+            <span class="crew-builder-steps-label">Agent steps</span>
+            <button class="btn btn-quiet btn-sm"
+                    type="button"
+                    hx-get="{{ url_for('crew_step_row') }}?workspace_id={{ workspace.id }}"
+                    hx-target="#crew-steps-list"
+                    hx-swap="beforeend">
+              + Add step
+            </button>
+          </div>
+
+          <div id="crew-steps-list" class="crew-steps-list">
+            <p class="crew-steps-empty" id="crew-steps-empty">
+              No steps yet — click <em>+ Add step</em> to begin.
+            </p>
+          </div>
+
+          {# Error area retargeted by HX-Retarget on validation failure #}
+          <div id="crew-launch-error"></div>
+
+          {# ── Save for future use ──────────────────────────────────────── #}
+          <div class="crew-save-row">
+            <button class="btn" type="submit">Launch crew</button>
+
+            <label class="crew-save-label">
+              <input type="checkbox"
+                     name="save_crew"
+                     value="1"
+                     class="crew-save-checkbox"
+                     onchange="
+                       document.getElementById('crew-save-name-wrap')
+                         .style.display = this.checked ? 'block' : 'none';
+                     ">
+              Save for future use
+            </label>
+          </div>
+
+          <div id="crew-save-name-wrap" style="display:none; margin-top:6px;">
+            <input type="text"
+                   name="saved_crew_name"
+                   class="crew-save-name-input"
+                   placeholder="e.g., Code Auditor Crew"
+                   autocomplete="off">
+            <p class="form-hint" style="margin-top:4px;">
+              Saved as a new crew provider in <code>providers.yaml</code>.
+              Custom agent personas become re-usable roles in <code>workspaces.yaml</code>.
+              The page will reload so your new crew appears in all dropdowns.
+            </p>
+          </div>
+
+        </form>
+      </div>
+
+      <div class="panel">
+        <h3>Git sync</h3>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" hx-post="{{ url_for('workspace_git_action', slug=workspace.slug, action='pull') }}"
+                  hx-target="#git-result" hx-swap="innerHTML">Pull</button>
+          <button class="btn" hx-post="{{ url_for('workspace_git_action', slug=workspace.slug, action='push') }}"
+                  hx-target="#git-result" hx-swap="innerHTML">Push</button>
+          <button class="btn" hx-post="{{ url_for('workspace_git_action', slug=workspace.slug, action='status') }}"
+                  hx-target="#git-result" hx-swap="innerHTML">Status</button>
+        </div>
+        <div id="git-result">
+          {% include "partials/git_result.html" with context %}
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h3>Runs</h3>
+        <div id="run-list"
+             hx-get="{{ url_for('run_list_partial', slug=workspace.slug) }}"
+             hx-trigger="every 3s, runRefresh from:body"
+             hx-swap="innerHTML settle:0">
+          {% include "partials/run_list.html" with context %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

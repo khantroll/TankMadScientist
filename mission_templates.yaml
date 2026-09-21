@@ -1,0 +1,82 @@
+# Mission templates for Tank.
+#
+# A mission is a named sequence of stages. Each stage becomes a normal
+# Tank run, chained off the previous stage's run via the same
+# parent_run_id mechanism the "Continue from run" picker already uses
+# — so prior output flows into the next stage automatically.
+#
+# Stage fields:
+#   name            stage identifier, also used by on_fail "jump:<name>"
+#   role            optional agent_role slug to look up within the workspace
+#                   (falls back to no system-prompt addition if absent)
+#   provider        optional provider id override (falls back to the
+#                   workspace's default_provider, then the global default)
+#   task            template string; {goal} is substituted with the
+#                   mission's goal text
+#   on_fail         "stop" (mark the mission failed) or "jump:<stage>"
+#                   (re-enter another stage, counted against max_fix_loops)
+#   next_on_success optional override for which stage runs next when this
+#                   one succeeds. If omitted, defaults to the next stage in
+#                   the YAML list below — which is wrong for any stage that
+#                   has a recovery-only branch (like "fixer") listed after
+#                   it. Set next_on_success explicitly (including `null` to
+#                   mean "mission complete") on any stage whose position in
+#                   this list isn't also its real success-path successor.
+#
+# IMPORTANT: every stage that proposes file changes still goes through
+# Tank's existing patch-approval gate — missions never apply a patch
+# without a human clicking Approve, including on every fix-loop pass.
+
+templates:
+  plan_build_test_fix:
+    label: "Plan -> Build -> Test -> Fix loop"
+    max_fix_loops: 3
+    stages:
+      - name: planner
+        role: null
+        provider: null
+        on_fail: stop
+        task: >
+          Create a concrete implementation plan for this goal. Identify exactly
+          which files need to change and what each change should accomplish.
+          Do not write final code yet - this is a plan, not a patch.
+
+          Goal: {goal}
+
+      - name: builder
+        role: null
+        provider: null
+        on_fail: stop
+        task: >
+          Implement the plan above to accomplish this goal. Propose patches for
+          every file that needs to change.
+
+          Goal: {goal}
+
+      - name: tester
+        role: null
+        provider: null
+        on_fail: "jump:fixer"
+        next_on_success: null
+        task: >
+          Run the project's test suite against the current state of the
+          repository and report the results. Do NOT propose any code changes
+          in this step. Set response_type to "plan" with empty patches, and
+          set post_actions.run_tests to true. Use the test command from the
+          Project profile section (or the workspace test_command override if
+          present) — do not assume pytest for PowerShell repos or npm for
+          Python repos.
+
+          Goal: {goal}
+
+      - name: fixer
+        role: null
+        provider: null
+        on_fail: "jump:fixer"
+        next_on_success: tester
+        task: >
+          The previous test run failed. Read the prior run's test output
+          carefully, fix the underlying issue, and propose new patches that
+          address the failure.
+
+          Goal: {goal}

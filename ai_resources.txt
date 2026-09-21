@@ -1,0 +1,4 @@
+https://github.com/Shubhamsaboo/awesome-llm-apps
+https://github.com/github/awesome-copilot/tree/main/prompts
+https://github.com/crewaiinc/crewai
+https://github.com/snwfdhmp/awesome-gpt-prompt-engineering

@@ -1,0 +1,7 @@
+{% if result is defined %}
+  <div class="git-line">[{{ action }}] {% if result.ok %}ok{% else %}error{% endif %}
+{{ result.stdout }}{% if result.stderr %}
+{{ result.stderr }}{% endif %}</div>
+{% else %}
+  <div class="git-line" style="color:var(--text-muted);">No sync action run yet this session.</div>
+{% endif %}

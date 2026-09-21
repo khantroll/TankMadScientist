@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Tank — Schedules{% endblock %}
+{% block content %}
+  <p style="margin-top:-6px;"><a href="{{ url_for('dashboard') }}" style="color:var(--text-muted); font-size:13px; text-decoration:none;">← Dashboard</a></p>
+  <h2 style="margin:4px 0 18px;">Schedules</h2>
+
+  <div class="workspace-layout">
+    <div class="panel">
+      <h3>New schedule</h3>
+      <form action="{{ url_for('create_schedule') }}" method="post">
+        <label for="workspace_id">Workspace</label>
+        <select name="workspace_id" id="workspace_id" required>
+          {% for ws in workspaces %}
+            <option value="{{ ws.id }}">{{ ws.name }}</option>
+          {% endfor %}
+        </select>
+        <label for="role_id">Agent role (optional)</label>
+        <select name="role_id" id="role_id">
+          <option value="">— general task —</option>
+          {% for ws in workspaces %}
+            {% for role in roles_by_workspace[ws.id] %}
+              <option value="{{ role.id }}">{{ ws.name }} / {{ role.name }}</option>
+            {% endfor %}
+          {% endfor %}
+        </select>
+        <label for="provider">Model / provider</label>
+        <select name="provider" id="provider">
+          {% for pid, label in providers %}
+            <option value="{{ pid }}" {% if pid == default_provider %}selected{% endif %}>
+              {{ label }}
+            </option>
+          {% endfor %}
+        </select>
+        <label for="task">Task</label>
+        <textarea name="task" id="task" required></textarea>
+        <label for="cron_expr">Cron expression</label>
+        <input type="text" name="cron_expr" id="cron_expr" placeholder="0 6 * * *" required>
+        <button class="btn" type="submit">Add schedule</button>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h3>Active &amp; paused</h3>
+      {% if not schedules %}
+        <p class="empty-state">No schedules yet.</p>
+      {% else %}
+      <table class="schedule-table">
+        <thead>
+          <tr><th>Cron</th><th>Provider</th><th>Task</th><th>Last run</th><th>State</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for s in schedules %}
+          <tr>
+            <td class="mono">{{ s.cron_expr }}</td>
+            <td class="mono">{{ s.provider or default_provider }}</td>
+            <td>{{ s.task }}</td>
+            <td class="mono">{{ s.last_run_at or "never" }}</td>
+            <td>{{ "enabled" if s.enabled else "paused" }}</td>
+            <td style="display:flex; gap:6px;">
+              <form action="{{ url_for('toggle_schedule', schedule_id=s.id) }}" method="post">
+                <button class="btn btn-quiet" type="submit">{{ "pause" if s.enabled else "resume" }}</button>
+              </form>
+              <form action="{{ url_for('remove_schedule', schedule_id=s.id) }}" method="post">
+                <button class="btn btn-quiet" type="submit">delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% if not workspaces %}
+  <p class="empty-state">No workspaces yet. Create one with the form on the left.</p>
+{% else %}
+<div class="workspace-grid">
+  {% for entry in workspaces %}
+  {% set ws = entry.workspace %}
+  {% set runs = entry.runs %}
+  {% set repo_error = entry.repo_error %}
+  <div class="workspace-card">
+    <h2>{{ ws.name }}</h2>
+    <div class="repo-path">{{ ws.repo_path }}</div>
+    {% if repo_error %}
+      <p class="form-error" style="margin:8px 0 0; font-size:12px;">{{ repo_error }}</p>
+    {% endif %}
+
+    <div class="status-strip" title="Most recent runs, oldest to newest">
+      {% if runs %}
+        {% for run in runs | reverse %}
+          <div class="led status-{{ run.status }}" title="{{ run.task }} — {{ run.status }}"></div>
+        {% endfor %}
+      {% else %}
+        <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-muted);">no runs yet</span>
+      {% endif %}
+    </div>
+
+    <div class="card-footer">
+      <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-muted);">
+        {{ runs | selectattr('status', 'equalto', 'running') | list | length }} running
+      </span>
+      <div class="card-footer-actions">
+        <a href="{{ url_for('workspace_detail', slug=ws.slug) }}">Open →</a>
+        <form action="{{ url_for('delete_workspace', slug=ws.slug) }}" method="post" class="inline-form"
+              onsubmit="return confirm('Delete workspace {{ ws.name }}? All runs, roles, and missions for it will be removed.');">
+          <button class="btn btn-cancel btn-sm" type="submit">Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

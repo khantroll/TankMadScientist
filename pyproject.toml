@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tank"
+version = "0.1.0"
+description = "Self-hosted command center for running Claude Code agents in parallel"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Flask==3.0.3",
+    "APScheduler==3.10.4",
+    "PyYAML==6.0.1",
+]
+
+[project.optional-dependencies]
+production = ["gunicorn>=22.0"]
+
+[project.scripts]
+tank = "app:main"
+
+[tool.setuptools]
+py-modules = ["app", "config", "git_sync", "local_agent", "log_format", "mad_scientist", "mission", "models", "output_quality", "providers", "repo_context", "run_chain", "scheduler", "session_manager"]

@@ -1,0 +1,6 @@
+workspaces:
+  - slug: example
+    name: Example Workspace
+    repo_path: /path/to/your/repository
+    default_provider: local_qwen
+    roles: []

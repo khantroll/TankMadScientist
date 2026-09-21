@@ -1,0 +1,120 @@
+{% set _crew_pids = crew_provider_ids if crew_provider_ids is defined else [] %}
+{% set ns = namespace(crew_ids=[], child_ids=[]) %}
+
+{% for run in runs %}
+  {% if run.provider in _crew_pids %}
+    {% set ns.crew_ids = ns.crew_ids + [run.id] %}
+  {% endif %}
+{% endfor %}
+
+{% for run in runs %}
+  {% if run.crew_run_id and run.crew_run_id in ns.crew_ids %}
+    {% set ns.child_ids = ns.child_ids + [run.id] %}
+  {% endif %}
+{% endfor %}
+
+{% if not runs %}
+  <p class="empty-state">No runs yet. Queue one with the form on the left.</p>
+{% else %}
+  {% for run in runs %}
+  {% if run.id not in ns.child_ids %}
+  {% set is_crew = run.provider in _crew_pids %}
+
+  <div class="run-card run-card--compact{% if is_crew %} run-card--crew{% endif %}"
+       id="run-card-{{ run.id }}">
+
+    <div class="run-head run-head--toggle"
+         onclick="toggleRunOutput({{ run.id }})">
+
+      <div class="run-head-left">
+        <span class="status-dot status-dot--{{ run.status }}"></span>
+        <span class="status-label status-label--{{ run.status }}">
+          {{- run.status | replace('awaiting_approval', 'approval') | replace('_', ' ') -}}
+        </span>
+
+        <span class="mono rh-dim">#{{ run.id }}</span>
+
+        {% if run.provider %}
+          <span class="mono rh-dim rh-provider">{{ run.provider }}</span>
+        {% endif %}
+
+        {% if is_crew %}
+          <span class="run-meta-crew-badge">crew</span>
+        {% endif %}
+
+        {% if run.parent_run_id and not is_crew %}
+          <span class="mono rh-dim" style="color:var(--accent);">←#{{ run.parent_run_id }}</span>
+        {% endif %}
+
+        {% if run.mission_id %}
+          <span class="run-mission-chip">m#{{ run.mission_id }}·{{ run.stage_name }}</span>
+        {% endif %}
+      </div>
+
+      <div class="run-head-task-wrap">
+        <span class="run-task--compact">{{ run.task }}</span>
+      </div>
+
+      <div class="run-head-right">
+        {% if is_crew %}
+        <button type="button"
+                class="btn-icon"
+                onclick="event.stopPropagation(); toggleCrewChildren({{ run.id }})"
+                title="Toggle crew sub-agents">
+          <span class="crew-chevron" id="crew-chevron-{{ run.id }}">&#9654;</span>
+        </button>
+        {% endif %}
+
+        {% if run.status == 'awaiting_approval' %}
+        <button type="button"
+                class="btn btn-approve btn-xs"
+                onclick="event.stopPropagation()"
+                hx-post="{{ url_for('approve_run_patch', run_id=run.id) }}"
+                hx-target="#run-output-{{ run.id }}"
+                hx-swap="outerHTML">
+          ✓ Approve
+        </button>
+        {% endif %}
+
+        {% if run.status in ('running', 'awaiting_approval', 'pending') %}
+        <button type="button"
+                class="btn btn-cancel btn-xs"
+                onclick="event.stopPropagation()"
+                hx-post="{{ url_for('cancel_run_route', run_id=run.id) }}"
+                hx-target="#run-output-{{ run.id }}"
+                hx-swap="outerHTML"
+                hx-confirm="Cancel this run?">
+          ×
+        </button>
+        {% endif %}
+
+        <span class="output-chevron crew-chevron" id="output-chevron-{{ run.id }}">&#9654;</span>
+      </div>
+    </div>
+
+    {% if is_crew %}
+    <div id="crew-children-{{ run.id }}"
+         class="crew-children"
+         style="display:block"
+         hx-preserve="true">
+      <div id="crew-children-inner-{{ run.id }}"
+           class="crew-children-inner"
+           hx-get="{{ url_for('run_children', run_id=run.id) }}"
+           hx-trigger="load
+           hx-target="#crew-children-inner-{{ run.id }}"
+           hx-swap="innerHTML settle:0">
+        <p class="crew-loading">Loading crew steps…</p>
+      </div>
+    </div>
+    {% endif %}
+
+    <div id="run-output-{{ run.id }}"
+         class="run-output-slot"
+         style="display:none"
+         hx-preserve="true"
+    </div>
+
+  </div>
+  {% endif %}
+  {% endfor %}
+{% endif %}

@@ -1,0 +1,58 @@
+{% if resume_error %}
+  <p class="form-error">{{ resume_error }}</p>
+{% endif %}
+{% if not mission_entries %}
+  <p class="empty-state">No missions yet. Give one a goal below and Tank will run it stage by stage.</p>
+{% else %}
+  {% for entry in mission_entries %}
+  {% set m = entry.mission %}
+  {% set mruns = entry.runs %}
+  <div class="mission-card">
+    <div class="mission-head">
+      <span class="status-badge status-{{ m.status }}">{{ m.status }}</span>
+      <span class="mono" style="font-size:11px; color:var(--text-muted);">{{ m.template }}</span>
+      {% if m.provider %}
+        <span class="mono" style="font-size:11px; color:var(--text-muted);">{{ m.provider }}</span>
+      {% endif %}
+      <span class="mission-goal">{{ m.goal }}</span>
+    </div>
+    <div class="mission-stage-track">
+      <span class="mission-stage-chip {% if m.current_stage %}current{% endif %}">
+        stage: {{ m.current_stage or '—' }}
+      </span>
+      {% if m.fix_loop_count %}
+        <span class="mission-stage-chip">fix attempts: {{ m.fix_loop_count }}</span>
+      {% endif %}
+    </div>
+    {% if m.note %}
+      <div class="mission-note">{{ m.note }}</div>
+    {% endif %}
+    {% if m.status in ('failed', 'aborted') and mruns %}
+    <form class="mission-resume"
+          hx-post="{{ url_for('resume_mission_route', slug=workspace.slug, mission_id=m.id) }}"
+          hx-target="#mission-list"
+          hx-swap="innerHTML">
+      <p class="form-hint" style="margin:0 0 10px;">Resume this mission - prior run output is passed to the next agent.</p>
+      <label for="resume-from-{{ m.id }}">Resume from run</label>
+      <select name="from_run_id" id="resume-from-{{ m.id }}">
+        {% for r in mruns | reverse %}
+          <option value="{{ r.id }}" {% if loop.first %}selected{% endif %}>
+            #{{ r.id }} - {{ r.stage_name }} ({{ r.status }})
+          </option>
+        {% endfor %}
+      </select>
+      <label for="resume-provider-{{ m.id }}">Provider for next stage</label>
+      <select name="provider" id="resume-provider-{{ m.id }}">
+        {% for pid, label in providers %}
+          <option value="{{ pid }}"
+            {% if pid == (m.provider or workspace.default_provider or default_provider) %}selected{% endif %}>
+            {{ label }}
+          </option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-sm" type="submit">Resume mission</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% endif %}

@@ -1,0 +1,36 @@
+{% if run.status == 'awaiting_approval' %}
+<div class="approval-gate" id="approval-gate-{{ run.id }}">
+  <div class="approval-copy">
+    <strong>Awaiting approval</strong>
+    <span>Review this run output before approving, rejecting, or cancelling.</span>
+  </div>
+  <div class="approval-actions">
+    <button type="button"
+            class="btn btn-approve btn-xs"
+            hx-post="{{ url_for('approve_run_patch', run_id=run.id) }}"
+            hx-swap="none">
+      ✓ Approve
+    </button>
+    <button type="button"
+            class="btn btn-cancel btn-xs"
+            hx-post="{{ url_for('reject_run_patch', run_id=run.id) }}"
+            hx-swap="none">
+      Reject
+    </button>
+  </div>
+</div>
+{% endif %}
+
+{% if run.note %}
+<div class="run-note">
+  {{ run.note }}
+</div>
+{% endif %}
+
+{% if formatted %}
+  {{ formatted | safe }}
+{% elif output %}
+  <pre class="run-output-pre">{{ output }}</pre>
+{% else %}
+  <pre class="run-output-pre">No output captured for this run yet.</pre>
+{% endif %}

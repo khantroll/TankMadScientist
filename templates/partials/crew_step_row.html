@@ -1,0 +1,136 @@
+{#
+  One crew-step row fragment — appended via hx-swap="beforeend" into
+  #crew-steps-list.  All form fields use array-notation names so Flask
+  can unpack them in-order with request.form.getlist("name[]").
+
+  KEY ARRAY CONTRACT
+  ──────────────────
+  The five parallel arrays (always submitted, even for hidden/empty fields)
+  guarantee index alignment in app.py's launch_crew handler:
+    agent_role_ids[]       — saved role ID or ""
+    agent_providers[]      — required leaf provider ID
+    agent_task_suffixes[]  — per-step task suffix or ""
+    custom_goals[]         — custom goal override or ""
+    custom_backstories[]   — custom backstory override or ""
+    custom_tools[]         — comma-separated tool override or ""
+
+  The persona fields live inside a hidden .crew-step-persona section
+  toggled by a pure-JS button.  They ARE submitted even when hidden so
+  index parity is never broken; the backend treats empty strings as
+  "no override".
+
+  The step-number badge is rendered by CSS counter so it auto-corrects
+  when any row is removed from the middle.
+#}
+<div class="crew-step-row">
+
+  <div class="crew-step-counter" aria-hidden="true"></div>
+
+  <div class="crew-step-body">
+
+    {# ── Row 1: Role + Provider selects ────────────────────────────────── #}
+    <div class="crew-step-selects">
+
+      <div class="crew-step-field">
+        <label class="crew-step-field-label">Agent role</label>
+        <select name="agent_role_ids[]" class="crew-step-select">
+          <option value="">— none —</option>
+          {% for role in roles %}
+          <option value="{{ role.id }}"
+                  title="{% if role.goal %}Goal: {{ role.goal }}{% endif %}{% if role.backstory %}&#10;Backstory: {{ role.backstory[:120] }}{% endif %}">
+            {{ role.name }}{% if role.goal %} — {{ role.goal[:42] }}{% if role.goal|length > 42 %}…{% endif %}{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="crew-step-field">
+        <label class="crew-step-field-label">Provider</label>
+        <select name="agent_providers[]" class="crew-step-select" required>
+          {% for pid, lbl in leaf_providers %}
+          <option value="{{ pid }}">{{ lbl }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+    </div>{# /.crew-step-selects #}
+
+    {# ── Row 2: Persona toggle ──────────────────────────────────────────── #}
+    <div class="crew-step-persona-toggle-wrap">
+      <button type="button"
+              class="crew-step-persona-toggle"
+              onclick="(function(btn){
+                var panel = btn.closest('.crew-step-body').querySelector('.crew-step-persona');
+                var open  = panel.style.display !== 'none';
+                panel.style.display = open ? 'none' : 'grid';
+                btn.classList.toggle('crew-step-persona-toggle--active', !open);
+                btn.querySelector('.crew-persona-toggle-label').textContent =
+                  open ? 'Customize agent persona' : 'Hide agent persona';
+              })(this)">
+        <span class="crew-persona-toggle-icon">&#9881;</span>
+        <span class="crew-persona-toggle-label">Customize agent persona</span>
+        <span class="crew-persona-chevron">&#9654;</span>
+      </button>
+    </div>
+
+    {# ── Row 3: Persona fields (hidden until toggled) ───────────────────── #}
+    <div class="crew-step-persona" style="display:none">
+
+      <div class="crew-step-field crew-step-field--full">
+        <label class="crew-step-field-label">
+          Agent goal
+          <span class="crew-step-opt">(overrides saved role)</span>
+        </label>
+        <input type="text"
+               name="custom_goals[]"
+               class="crew-step-persona-input"
+               placeholder="What is this specific agent's objective?">
+      </div>
+
+      <div class="crew-step-field crew-step-field--full">
+        <label class="crew-step-field-label">
+          Agent backstory
+          <span class="crew-step-opt">(overrides saved role)</span>
+        </label>
+        <input type="text"
+               name="custom_backstories[]"
+               class="crew-step-persona-input"
+               placeholder="Provide an operational profile / expertise context">
+      </div>
+
+      <div class="crew-step-field crew-step-field--full">
+        <label class="crew-step-field-label">
+          Authorized tools
+          <span class="crew-step-opt">(comma-separated, overrides saved role)</span>
+        </label>
+        <input type="text"
+               name="custom_tools[]"
+               class="crew-step-persona-input"
+               placeholder="e.g. run_tests, git_diff">
+      </div>
+
+    </div>{# /.crew-step-persona #}
+
+    {# ── Row 4: Task suffix ─────────────────────────────────────────────── #}
+    <div class="crew-step-field crew-step-field--full">
+      <label class="crew-step-field-label">
+        Task suffix
+        <span class="crew-step-opt">(optional, appended to the crew task)</span>
+      </label>
+      <input type="text"
+             name="agent_task_suffixes[]"
+             class="crew-step-suffix"
+             placeholder="Additional instructions for this step…">
+    </div>
+
+  </div>{# /.crew-step-body #}
+
+  {# ── Remove button ─────────────────────────────────────────────────────── #}
+  <button class="btn-icon crew-step-remove"
+          type="button"
+          title="Remove this step"
+          hx-on:click="this.closest('.crew-step-row').remove()">
+    &#x2715;
+  </button>
+
+</div>{# /.crew-step-row #}
