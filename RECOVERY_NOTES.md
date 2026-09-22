@@ -1,4 +1,10 @@
-# Tank — Mad Scientist Recovery Notes
+# Local recovery update — 2026-09-22
+
+The `local-recovered` branch supersedes the missing-source assessment below. Main at `618ac2b86881d94db43cfd63d52dd6b848454918` remains the older preservation baseline. The recovered ZIP supplies the graph implementation, its validator, repository scouting, and approval UI. See `LOCAL_RECOVERY_REPORT.md` for evidence, sanitization, and validation limitations. The older notes below describe the September 21 snapshot, not the current branch. Their claim that the old tree contained no logs was inaccurate: main included `data/logs/run-115.log`, removed here.
+
+---
+
+# Tank â€” Mad Scientist Recovery Notes
 
 Recovered 2026-09-21 from the latest surviving project archive and individual files retained from the June 2026 recovery work.
 
@@ -20,10 +26,10 @@ The recovered tree therefore contains:
 
 The final documented design moved Mad Scientist from a simple parent/child run chain to a durable graph source of truth:
 
-1. `mad_scientist_missions` — mission-level graph state.
-2. `mad_scientist_steps` — logical planned steps.
-3. `mad_scientist_step_dependencies` — DAG edges.
-4. `mad_scientist_attempts` — maps ordinary Tank runs to attempts against logical steps.
+1. `mad_scientist_missions` â€” mission-level graph state.
+2. `mad_scientist_steps` â€” logical planned steps.
+3. `mad_scientist_step_dependencies` â€” DAG edges.
+4. `mad_scientist_attempts` â€” maps ordinary Tank runs to attempts against logical steps.
 5. `parent_run_id` remains compatibility metadata only, not the graph source of truth.
 6. Ready steps are scheduled when all direct dependencies complete.
 7. A step with multiple dependencies receives context from **all direct dependency steps**.

@@ -108,6 +108,61 @@ CREATE TABLE IF NOT EXISTS workspace_memory (
     updated_at TEXT NOT NULL,
     UNIQUE(workspace_id, key)
 );
+
+CREATE TABLE IF NOT EXISTS mad_scientist_missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    legacy_mission_id INTEGER REFERENCES missions(id) ON DELETE SET NULL,
+    parent_run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    goal TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planning',
+    summary TEXT,
+    plan_json TEXT,
+    blocked_reason TEXT,
+    provider TEXT,
+    max_steps INTEGER,
+    max_fix_loops INTEGER,
+    fix_loop_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mad_scientist_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES mad_scientist_missions(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    provider TEXT,
+    task TEXT NOT NULL,
+    write_allowed INTEGER NOT NULL DEFAULT 0,
+    success_criteria_json TEXT,
+    status TEXT NOT NULL DEFAULT 'waiting',
+    blocked_reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(mission_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS mad_scientist_step_dependencies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES mad_scientist_missions(id) ON DELETE CASCADE,
+    step_id INTEGER NOT NULL REFERENCES mad_scientist_steps(id) ON DELETE CASCADE,
+    depends_on_step_id INTEGER NOT NULL REFERENCES mad_scientist_steps(id) ON DELETE CASCADE,
+    UNIQUE(step_id, depends_on_step_id)
+);
+
+CREATE TABLE IF NOT EXISTS mad_scientist_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES mad_scientist_missions(id) ON DELETE CASCADE,
+    step_id INTEGER REFERENCES mad_scientist_steps(id) ON DELETE CASCADE,
+    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL,
+    attempt_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    parent_context_run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
 """
 
 
@@ -163,7 +218,7 @@ def reload_config():
 def sync_workspaces_from_yaml():
     """Upsert workspaces/roles from workspaces.yaml. Safe to call repeatedly."""
     try:
-        with open(config.WORKSPACES_FILE) as f:
+        with open(config.WORKSPACES_FILE, "r", encoding="utf-8") as f:
             doc = yaml.safe_load(f) or {}
     except FileNotFoundError:
         return
@@ -243,7 +298,7 @@ def _slugify(name: str) -> str:
 
 def _read_workspaces_doc() -> dict:
     try:
-        with open(config.WORKSPACES_FILE) as f:
+        with open(config.WORKSPACES_FILE, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except FileNotFoundError:
         return {}
@@ -692,3 +747,288 @@ def upsert_workspace_memory(workspace_id, key, value):
             """,
             (workspace_id, key, payload, now),
         )
+
+
+# ---------- mad scientist graph ----------
+
+def create_mad_scientist_mission(
+    workspace_id,
+    goal,
+    *,
+    legacy_mission_id=None,
+    parent_run_id=None,
+    provider=None,
+    max_steps=None,
+    max_fix_loops=None,
+):
+    now = _now()
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO mad_scientist_missions
+                (workspace_id, legacy_mission_id, parent_run_id, goal, status,
+                 provider, max_steps, max_fix_loops, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'planning', ?, ?, ?, ?, ?)
+            """,
+            (
+                workspace_id,
+                legacy_mission_id,
+                parent_run_id,
+                goal,
+                provider,
+                max_steps,
+                max_fix_loops,
+                now,
+                now,
+            ),
+        )
+        return cur.lastrowid
+
+
+def get_mad_scientist_mission(mission_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_missions WHERE id = ?",
+            (mission_id,),
+        ).fetchone()
+
+
+def get_mad_scientist_mission_by_legacy(legacy_mission_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_missions WHERE legacy_mission_id = ?",
+            (legacy_mission_id,),
+        ).fetchone()
+
+
+def get_mad_scientist_mission_by_run(run_id):
+    with get_db() as conn:
+        return conn.execute(
+            """
+            SELECT msm.*
+            FROM mad_scientist_missions msm
+            JOIN mad_scientist_attempts msa ON msa.mission_id = msm.id
+            WHERE msa.run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+
+
+def list_mad_scientist_missions(workspace_id, limit=10):
+    with get_db() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM mad_scientist_missions
+            WHERE workspace_id = ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (workspace_id, limit),
+        ).fetchall()
+
+
+def update_mad_scientist_mission(mission_id, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = _now()
+    columns = ", ".join(f"{key} = ?" for key in fields)
+    values = list(fields.values()) + [mission_id]
+    with get_db() as conn:
+        conn.execute(f"UPDATE mad_scientist_missions SET {columns} WHERE id = ?", values)
+
+
+def create_mad_scientist_step(
+    mission_id,
+    name,
+    role,
+    provider,
+    task,
+    write_allowed,
+    success_criteria,
+):
+    now = _now()
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO mad_scientist_steps
+                (mission_id, name, role, provider, task, write_allowed,
+                 success_criteria_json, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?)
+            """,
+            (
+                mission_id,
+                name,
+                role,
+                provider,
+                task,
+                1 if write_allowed else 0,
+                json.dumps(success_criteria or []),
+                now,
+                now,
+            ),
+        )
+        return cur.lastrowid
+
+
+def update_mad_scientist_step(step_id, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = _now()
+    columns = ", ".join(f"{key} = ?" for key in fields)
+    values = list(fields.values()) + [step_id]
+    with get_db() as conn:
+        conn.execute(f"UPDATE mad_scientist_steps SET {columns} WHERE id = ?", values)
+
+
+def get_mad_scientist_step(step_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_steps WHERE id = ?",
+            (step_id,),
+        ).fetchone()
+
+
+def list_mad_scientist_steps(mission_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_steps WHERE mission_id = ? ORDER BY id",
+            (mission_id,),
+        ).fetchall()
+
+
+def create_mad_scientist_dependency(mission_id, step_id, depends_on_step_id):
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO mad_scientist_step_dependencies
+                (mission_id, step_id, depends_on_step_id)
+            VALUES (?, ?, ?)
+            """,
+            (mission_id, step_id, depends_on_step_id),
+        )
+        return cur.lastrowid
+
+
+def list_mad_scientist_dependencies(mission_id):
+    with get_db() as conn:
+        return conn.execute(
+            """
+            SELECT d.*, s.name AS step_name, ds.name AS depends_on_name
+            FROM mad_scientist_step_dependencies d
+            JOIN mad_scientist_steps s ON s.id = d.step_id
+            JOIN mad_scientist_steps ds ON ds.id = d.depends_on_step_id
+            WHERE d.mission_id = ?
+            ORDER BY d.step_id, d.depends_on_step_id
+            """,
+            (mission_id,),
+        ).fetchall()
+
+
+def list_mad_scientist_step_dependencies(step_id):
+    with get_db() as conn:
+        return conn.execute(
+            """
+            SELECT ds.*
+            FROM mad_scientist_step_dependencies d
+            JOIN mad_scientist_steps ds ON ds.id = d.depends_on_step_id
+            WHERE d.step_id = ?
+            ORDER BY d.id
+            """,
+            (step_id,),
+        ).fetchall()
+
+
+def list_mad_scientist_dependents(step_id):
+    with get_db() as conn:
+        return conn.execute(
+            """
+            SELECT s.*
+            FROM mad_scientist_step_dependencies d
+            JOIN mad_scientist_steps s ON s.id = d.step_id
+            WHERE d.depends_on_step_id = ?
+            ORDER BY d.id
+            """,
+            (step_id,),
+        ).fetchall()
+
+
+def create_mad_scientist_attempt(
+    mission_id,
+    step_id,
+    run_id,
+    attempt_number,
+    attempt_type,
+    parent_context_run_id=None,
+):
+    now = _now()
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO mad_scientist_attempts
+                (mission_id, step_id, run_id, attempt_number, attempt_type,
+                 status, parent_context_run_id, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                mission_id,
+                step_id,
+                run_id,
+                attempt_number,
+                attempt_type,
+                parent_context_run_id,
+                now,
+            ),
+        )
+        return cur.lastrowid
+
+
+def get_mad_scientist_attempt_by_run(run_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_attempts WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+
+
+def update_mad_scientist_attempt(attempt_id, **fields):
+    if not fields:
+        return
+    if fields.get("status") in ("done", "failed", "rejected", "cancelled") and "completed_at" not in fields:
+        fields["completed_at"] = _now()
+    columns = ", ".join(f"{key} = ?" for key in fields)
+    values = list(fields.values()) + [attempt_id]
+    with get_db() as conn:
+        conn.execute(f"UPDATE mad_scientist_attempts SET {columns} WHERE id = ?", values)
+
+
+def list_mad_scientist_attempts(mission_id):
+    with get_db() as conn:
+        return conn.execute(
+            """
+            SELECT a.*, s.name AS step_name
+            FROM mad_scientist_attempts a
+            LEFT JOIN mad_scientist_steps s ON s.id = a.step_id
+            WHERE a.mission_id = ?
+            ORDER BY a.id
+            """,
+            (mission_id,),
+        ).fetchall()
+
+
+def list_mad_scientist_step_attempts(step_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_attempts WHERE step_id = ? ORDER BY id",
+            (step_id,),
+        ).fetchall()
+
+
+def latest_successful_attempt_for_step(step_id):
+    with get_db() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM mad_scientist_attempts
+            WHERE step_id = ? AND status = 'done'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (step_id,),
+        ).fetchone()

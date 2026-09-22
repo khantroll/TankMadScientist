@@ -1,0 +1,22 @@
+{% if approval and approval.debug_comment %}
+<!-- {{ approval.debug_comment }} -->
+{% endif %}
+{% if approval and approval.approval_available %}
+  <span class="approval-controls">
+    <button type="button"
+            class="btn btn-approve btn-xs"
+            onclick="event.stopPropagation()"
+            hx-post="{{ url_for('approve_run_patch', run_id=approval.run_id) }}"
+            hx-swap="none">
+      Approve
+    </button>
+    <button type="button"
+            class="btn btn-cancel btn-xs"
+            onclick="event.stopPropagation()"
+            hx-post="{{ url_for('reject_run_patch', run_id=approval.run_id) }}"
+            hx-swap="none"
+            hx-confirm="Reject this proposed patch?">
+      Reject
+    </button>
+  </span>
+{% endif %}

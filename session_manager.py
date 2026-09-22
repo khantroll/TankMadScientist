@@ -150,8 +150,14 @@ def launch_run(run_id):
     try:
         pid = providers.start_run(ctx, on_finished=_on_finished)
     except ProviderError as exc:
+        with open(log_path, "a", encoding="utf-8", buffering=1) as f:
+            f.write(f"[tank] provider start error: {type(exc).__name__}: {exc}\n")
         models.update_run(
-            run_id, status="failed", error=str(exc), finished_at=_now()
+            run_id,
+            status="failed",
+            error=str(exc),
+            log_path=log_path,
+            finished_at=_now(),
         )
         _unregister_active_run(run_id)
         mission.advance_mission(run_id)
@@ -176,6 +182,42 @@ def launch_pending():
         launch_run(run["id"])
 
 
+def _finalize_parent_crew_if_complete(crew_run_id):
+    """
+    Safety net for crew parents.
+
+    The orchestrator should normally finish the crew parent after child runs
+    complete. This helper prevents a crew parent from remaining stuck in
+    'running' when all of its children are already terminal.
+    """
+    if not crew_run_id:
+        return
+
+    crew = models.get_run(crew_run_id)
+    if crew is None or crew["status"] not in ("pending", "running", "awaiting_approval"):
+        return
+    if crew["provider"] == "mad_scientist":
+        return
+
+    children = models.list_child_runs(crew_run_id)
+    if not children:
+        return
+
+    active_statuses = ("pending", "running", "awaiting_approval")
+    terminal_failure_statuses = ("failed", "cancelled", "rejected")
+
+    if any(child["status"] in active_statuses for child in children):
+        return
+
+    failed = any(child["status"] in terminal_failure_statuses for child in children)
+
+    models.update_run(
+        crew_run_id,
+        status="failed" if failed else "done",
+        finished_at=_now(),
+    )
+
+
 def approve_run(run_id):
     """Apply an approved local-agent patch (or acknowledge a plan) and advance."""
     run = models.get_run(run_id)
@@ -192,7 +234,9 @@ def approve_run(run_id):
     if response_type == "plan":
         if run["log_path"]:
             local_agent._log(run["log_path"], "\n[tank] plan acknowledged by user\n")
+
         models.update_run(run_id, status="done", finished_at=_now())
+        _finalize_parent_crew_if_complete(run["crew_run_id"])
         mission.advance_mission(run_id)
         return True
 
@@ -238,6 +282,11 @@ def approve_run(run_id):
         models.update_run(
             run_id, status="failed", error=str(exc), finished_at=_now()
         )
+
+    updated = models.get_run(run_id)
+    if updated is not None:
+        _finalize_parent_crew_if_complete(updated["crew_run_id"])
+
     mission.advance_mission(run_id)
     return True
 

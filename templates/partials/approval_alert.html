@@ -1,0 +1,15 @@
+{% if awaiting_approval_runs %}
+  <div class="approval-alert">
+    <strong>
+      {{ awaiting_approval_runs|length }}
+      run{% if awaiting_approval_runs|length != 1 %}s are{% else %} is{% endif %}
+      awaiting approval
+    </strong>
+    <span>This workspace is paused on proposed patches.</span>
+    <span class="approval-alert-links">
+      {% for run in awaiting_approval_runs %}
+        <a class="mono" href="#run-card-{{ run.id }}">#{{ run.id }}</a>
+      {% endfor %}
+    </span>
+  </div>
+{% endif %}

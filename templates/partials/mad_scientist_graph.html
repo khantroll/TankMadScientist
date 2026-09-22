@@ -1,0 +1,159 @@
+{% if not mad_scientist_entries %}
+  <p class="empty-state">No Mad Scientist graph missions yet.</p>
+{% else %}
+  <div class="mad-status-legend">
+    <span><i class="mad-status-dot mad-status-dot--waiting"></i>waiting</span>
+    <span><i class="mad-status-dot mad-status-dot--ready"></i>ready</span>
+    <span><i class="mad-status-dot mad-status-dot--running"></i>running</span>
+    <span><i class="mad-status-dot mad-status-dot--awaiting_approval"></i>awaiting approval</span>
+    <span><i class="mad-status-dot mad-status-dot--completed"></i>completed</span>
+    <span><i class="mad-status-dot mad-status-dot--failed"></i>failed</span>
+    <span><i class="mad-status-dot mad-status-dot--blocked"></i>blocked</span>
+  </div>
+  {% for entry in mad_scientist_entries %}
+    {% set gm = entry.mission %}
+    <div class="mad-graph-card">
+      <div class="mad-graph-head">
+        <span class="status-badge status-{{ gm.display_status }}">
+          {% if gm.display_status == 'awaiting_approval' %}Awaiting approval{% else %}{{ gm.display_status }}{% endif %}
+        </span>
+        <span class="mono" style="font-size:11px; color:var(--text-muted);">g#{{ gm.id }}</span>
+        {% if gm.provider %}
+          <span class="mono" style="font-size:11px; color:var(--text-muted);">{{ gm.provider }}</span>
+        {% endif %}
+        {% if gm.parent_run_id %}
+          <a class="mono mad-run-link" href="#run-card-{{ gm.parent_run_id }}">parent #{{ gm.parent_run_id }}</a>
+        {% endif %}
+      </div>
+      <div class="mad-graph-goal">{{ gm.goal }}</div>
+      <div class="mad-graph-meta">
+        <span>created {{ gm.created_at }}</span>
+        <span>updated {{ gm.updated_at }}</span>
+        {% if gm.parent_run_status %}
+          <span>parent {{ gm.parent_run_status }}</span>
+        {% endif %}
+      </div>
+      {% if gm.summary %}
+        <div class="mission-note">{{ gm.summary }}</div>
+      {% endif %}
+      {% if gm.status_message %}
+        <div class="mad-approval-alert">
+          {{ gm.status_message }}
+          {% for attempt in entry.awaiting_approval_attempts %}
+            <a class="mono mad-run-link" href="#run-card-{{ attempt.run_id }}">#{{ attempt.run_id }}</a>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if gm.blocked_reason %}
+        <div class="mission-note mad-blocked-note">{{ gm.blocked_reason }}</div>
+      {% endif %}
+
+      {% if entry.latest_scout_attempt %}
+        {% set scout = entry.latest_scout_attempt %}
+        <div class="mad-scout-status">
+          <span class="mad-status-pill mad-status-pill--{{ scout.status }}">
+            scout {{ scout.status | replace('_', ' ') }}
+          </span>
+          <a class="mono mad-run-link" href="#run-card-{{ scout.run_id }}">#{{ scout.run_id }}</a>
+          <a class="mad-run-link" href="{{ url_for('run_output', run_id=scout.run_id) }}" target="_blank" rel="noopener">log</a>
+          <span class="mono rh-dim">attempt {{ scout.attempt_number }}</span>
+          {% if scout.failure_reason %}
+            <small class="mad-failure-text">{{ scout.failure_reason }}</small>
+          {% endif %}
+        </div>
+      {% endif %}
+
+      {% if not entry.steps and gm.status in ('failed', 'blocked') %}
+        <button class="btn btn-sm"
+                type="button"
+                hx-post="{{ url_for('retry_mad_scientist_scout', slug=workspace.slug, graph_mission_id=gm.id) }}"
+                hx-target="#mad-scientist-graph"
+                hx-swap="innerHTML">
+          Retry scout
+        </button>
+      {% endif %}
+
+      {% if entry.steps %}
+        <div class="mad-step-table">
+          <div class="mad-step-row mad-step-row--head">
+            <span>Step</span>
+            <span>Role</span>
+            <span>Status</span>
+            <span>Waiting on</span>
+            <span>Attempts</span>
+          </div>
+          {% for item in entry.steps %}
+            {% set latest = item.latest_attempt %}
+            <div class="mad-step-row mad-step-row--{{ item.display_status }}">
+              <span>
+                <strong>{{ item.name }}</strong>
+                <small>
+                  deps:
+                  {% if item.dependencies %}
+                    {{ item.dependencies | join(", ") }}
+                  {% else %}
+                    root
+                  {% endif %}
+                </small>
+                {% if item.blocked_reason %}
+                  <small class="mad-failure-text">{{ item.blocked_reason }}</small>
+                {% endif %}
+              </span>
+              <span>
+                {{ item.role }}
+                {% if item.provider %}
+                  <small>{{ item.provider }}</small>
+                {% endif %}
+              </span>
+              <span>
+                <span class="mad-status-pill mad-status-pill--{{ item.display_status }}">
+                  {% if item.display_status == 'awaiting_approval' %}AWAITING APPROVAL{% else %}{{ item.display_status | replace('_', ' ') }}{% endif %}
+                </span>
+              </span>
+              <span>
+                {% if item.waiting_on %}
+                  {{ item.waiting_on | join(", ") }}
+                {% else %}
+                  <span class="rh-dim">none</span>
+                {% endif %}
+              </span>
+              <span>
+                <strong>{{ item.attempt_count }}</strong>
+                {% if latest %}
+                  <a class="mono mad-run-link" href="#run-card-{{ latest.run_id }}">#{{ latest.run_id }}</a>
+                  <a class="mad-run-link" href="{{ url_for('run_output', run_id=latest.run_id) }}" target="_blank" rel="noopener">log</a>
+                  <span class="mono rh-dim">{{ latest.attempt_type }}/{{ latest.status | replace('_', ' ') }}</span>
+                  {% if latest.status == 'awaiting_approval' %}
+                    <span class="mad-approval-actions">
+                      {% with approval=latest.approval %}
+                        {% include "partials/approval_controls.html" %}
+                      {% endwith %}
+                      {% if not latest.approval_available %}
+                        <small class="mad-failure-text">Approval payload is missing or not actionable.</small>
+                      {% endif %}
+                    </span>
+                  {% endif %}
+                {% endif %}
+                {% if item.attempts|length > 1 %}
+                  <small>
+                    {% for attempt in item.attempts %}
+                      <a class="mono mad-run-link" href="#run-card-{{ attempt.run_id }}">#{{ attempt.run_id }}</a>
+                      <a class="mad-run-link" href="{{ url_for('run_output', run_id=attempt.run_id) }}" target="_blank" rel="noopener">log</a>
+                      {{ attempt.attempt_type }}/{{ attempt.status | replace('_', ' ') }}{% if not loop.last %}; {% endif %}
+                    {% endfor %}
+                  </small>
+                {% endif %}
+              </span>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        {% if gm.status in ('failed', 'blocked') %}
+          <p class="crew-loading">Scout did not create graph steps.</p>
+        {% else %}
+          <p class="crew-loading">Waiting for scout to create graph steps...</p>
+        {% endif %}
+      {% endif %}
+    </div>
+  {% endfor %}
+{% endif %}

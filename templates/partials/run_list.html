@@ -29,7 +29,7 @@
       <div class="run-head-left">
         <span class="status-dot status-dot--{{ run.status }}"></span>
         <span class="status-label status-label--{{ run.status }}">
-          {{- run.status | replace('awaiting_approval', 'approval') | replace('_', ' ') -}}
+          {{- run.status | replace('awaiting_approval', 'awaiting approval') | replace('_', ' ') -}}
         </span>
 
         <span class="mono rh-dim">#{{ run.id }}</span>
@@ -65,15 +65,9 @@
         </button>
         {% endif %}
 
-        {% if run.status == 'awaiting_approval' %}
-        <button type="button"
-                class="btn btn-approve btn-xs"
-                onclick="event.stopPropagation()"
-                hx-post="{{ url_for('approve_run_patch', run_id=run.id) }}"
-                hx-swap="none">
-          ✓ Approve
-        </button>
-        {% endif %}
+        {% with approval=run.approval %}
+          {% include "partials/approval_controls.html" %}
+        {% endwith %}
 
         {% if run.status in ('running', 'awaiting_approval', 'pending') %}
         <button type="button"

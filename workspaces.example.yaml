@@ -1,0 +1,10 @@
+workspaces:
+  - slug: example
+    name: Example project
+    repo_path: /path/to/project
+    default_provider: local_qwen
+    roles:
+      - slug: reviewer
+        name: Reviewer
+        goal: Review the project and report findings.
+        tools: [git_diff]

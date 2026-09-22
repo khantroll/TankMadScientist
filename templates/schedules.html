@@ -25,10 +25,14 @@
         </select>
         <label for="provider">Model / provider</label>
         <select name="provider" id="provider">
-          {% for pid, label in providers %}
-            <option value="{{ pid }}" {% if pid == default_provider %}selected{% endif %}>
-              {{ label }}
-            </option>
+          {% for group in provider_groups %}
+            <optgroup label="{{ group.label }}">
+              {% for pid, label in group.options %}
+                <option value="{{ pid }}" {% if pid == default_provider %}selected{% endif %}>
+                  {{ label }}
+                </option>
+              {% endfor %}
+            </optgroup>
           {% endfor %}
         </select>
         <label for="task">Task</label>

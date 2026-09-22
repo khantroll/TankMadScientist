@@ -1,6 +1,2 @@
-workspaces:
-  - slug: example
-    name: Example Workspace
-    repo_path: /path/to/your/repository
-    default_provider: local_qwen
-    roles: []
+# Configure workspaces in the dashboard or copy workspaces.example.yaml.
+workspaces: []

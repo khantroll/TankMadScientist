@@ -17,6 +17,13 @@
     </form>
   </div>
 
+  <div id="approval-alert"
+       hx-get="{{ url_for('approval_alert_partial', slug=workspace.slug) }}"
+       hx-trigger="every 3s, runRefresh from:body"
+       hx-swap="innerHTML settle:0">
+    {% include "partials/approval_alert.html" with context %}
+  </div>
+
   <div class="workspace-layout">
     <div>
       <div class="panel">
@@ -39,11 +46,15 @@
           </select>
           <label for="mission_provider">Model / provider</label>
           <select name="provider" id="mission_provider">
-            {% for pid, label in providers %}
-              <option value="{{ pid }}"
-                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
-                {{ label }}
-              </option>
+            {% for group in provider_groups %}
+              <optgroup label="{{ group.label }}">
+                {% for pid, label in group.options %}
+                  <option value="{{ pid }}"
+                    {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
+                    {{ label }}
+                  </option>
+                {% endfor %}
+              </optgroup>
             {% endfor %}
           </select>
           <p class="form-hint">Used for every stage in this mission. Pick a <em>Tank-controlled</em> agent (e.g. OpenRouter agent, Mistral agent) so build/fix stages can propose patches.</p>
@@ -62,11 +73,15 @@
               hx-swap="innerHTML">
           <label for="mad_provider">Model / provider</label>
           <select name="mad_provider" id="mad_provider">
-            {% for pid, label in providers %}
-              <option value="{{ pid }}"
-                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
-                {{ label }}
-              </option>
+            {% for group in provider_groups %}
+              <optgroup label="{{ group.label }}">
+                {% for pid, label in group.options %}
+                  <option value="{{ pid }}"
+                    {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
+                    {{ label }}
+                  </option>
+                {% endfor %}
+              </optgroup>
             {% endfor %}
           </select>
 
@@ -90,6 +105,13 @@
           <button class="btn" type="submit">Start Mad Scientist Mission</button>
         </form>
         <div id="mad-scientist-error"></div>
+        <div id="mad-scientist-graph"
+             hx-get="{{ url_for('mad_scientist_graph_partial', slug=workspace.slug) }}"
+             hx-trigger="load, every 4s, runRefresh from:body"
+             hx-swap="innerHTML settle:0"
+             style="margin-top:12px;">
+          {% include "partials/mad_scientist_graph.html" with context %}
+        </div>
       </div>
 
       <div class="panel">
@@ -108,11 +130,15 @@
           </select>
           <label for="provider">Model / provider</label>
           <select name="provider" id="provider">
-            {% for pid, label in providers %}
-              <option value="{{ pid }}"
-                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
-                {{ label }}
-              </option>
+            {% for group in provider_groups %}
+              <optgroup label="{{ group.label }}">
+                {% for pid, label in group.options %}
+                  <option value="{{ pid }}"
+                    {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
+                    {{ label }}
+                  </option>
+                {% endfor %}
+              </optgroup>
             {% endfor %}
           </select>
           <label for="parent_run_id">Continue from run</label>

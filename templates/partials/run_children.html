@@ -12,7 +12,7 @@
         <span class="crew-step-num">{{ loop.index }}</span>
         <span class="status-dot status-dot--{{ child.status }}"></span>
         <span class="status-label status-label--{{ child.status }}">
-          {{- child.status | replace('awaiting_approval', 'approval') | replace('_', ' ') -}}
+          {{- child.status | replace('awaiting_approval', 'awaiting approval') | replace('_', ' ') -}}
         </span>
 
         {% if child.provider %}
@@ -29,15 +29,9 @@
       </div>
 
       <div class="run-head-right">
-        {% if child.status == 'awaiting_approval' %}
-        <button type="button"
-                class="btn btn-approve btn-xs"
-                onclick="event.stopPropagation()"
-                hx-post="{{ url_for('approve_run_patch', run_id=child.id) }}"
-                hx-swap="none">
-          ✓ Approve
-        </button>
-        {% endif %}
+        {% with approval=child.approval %}
+          {% include "partials/approval_controls.html" %}
+        {% endwith %}
 
         {% if child.status in ('running', 'awaiting_approval', 'pending') %}
         <button type="button"

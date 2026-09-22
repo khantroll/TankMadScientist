@@ -21,4 +21,4 @@ production = ["gunicorn>=22.0"]
 tank = "app:main"
 
 [tool.setuptools]
-py-modules = ["app", "config", "git_sync", "local_agent", "log_format", "mad_scientist", "mission", "models", "output_quality", "providers", "repo_context", "run_chain", "scheduler", "session_manager"]
+py-modules = ["app", "config", "git_sync", "local_agent", "log_format", "mad_scientist", "mad_scientist_graph", "mission", "models", "output_quality", "providers", "repo_context", "run_chain", "scheduler", "session_manager"]

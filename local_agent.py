@@ -146,7 +146,20 @@ def _default_post_actions() -> dict:
     }
 
 
-def _coerce_agent_response(raw: str, log_path: str, strict: bool = False) -> dict:
+def _is_tester_context(stage_name: str | None = None, role: dict | None = None) -> bool:
+    labels = [stage_name or ""]
+    if role:
+        labels.extend(str(role.get(key) or "") for key in ("slug", "name", "role", "goal"))
+    combined = " ".join(labels).lower()
+    return any(token in combined for token in ("tester", "test", "validator", "validation"))
+
+
+def _coerce_agent_response(
+    raw: str,
+    log_path: str,
+    strict: bool = False,
+    tester_context: bool = False,
+) -> dict:
     """Parse strict JSON from the model, or fall back to a plain-text plan.
 
     strict=True (used for mission stages) disables the plain-text
@@ -157,9 +170,9 @@ def _coerce_agent_response(raw: str, log_path: str, strict: bool = False) -> dic
     real failure.
     """
     try:
-        return _validate_payload(_extract_json(raw))
+        return _validate_payload(_extract_json(raw), tester_context=tester_context)
     except ValueError as exc:
-        _log(log_path, f"[tank] JSON parse failed: {exc}\n")
+        _log(log_path, f"[tank] response validation failed: {exc}\n")
         _log(log_path, f"--- raw model response ---\n{raw}\n--- end ---\n")
         if strict or not raw.strip():
             raise
@@ -172,20 +185,44 @@ def _coerce_agent_response(raw: str, log_path: str, strict: bool = False) -> dic
         }
 
 
-def _validate_payload(payload: dict) -> dict:
+def _validate_payload(payload: dict, tester_context: bool = False) -> dict:
     response_type = payload.get("response_type")
-    if response_type not in {"plan", "patch"}:
-        raise ValueError("response_type must be 'plan' or 'patch'")
+    allowed_types = {"plan", "patch", "result"} if tester_context else {"plan", "patch"}
+    if response_type not in allowed_types:
+        allowed = "', '".join(sorted(allowed_types))
+        raise ValueError(f"response_type must be one of '{allowed}'")
 
     patches = payload.get("patches") or []
     if response_type == "patch" and not patches:
         raise ValueError("patch response must include at least one patch")
 
+    post_actions = payload.get("post_actions") or {}
+    run_tests = bool(post_actions.get("run_tests"))
+    test_command = (post_actions.get("test_command") or "").strip()
+    if tester_context and response_type in {"plan", "result"} and not patches:
+        if not run_tests:
+            raise ValueError("tester response rejected: missing post_actions.run_tests=true")
+        if not test_command:
+            raise ValueError("tester response rejected: missing post_actions.test_command")
+        summary = (payload.get("summary") or "").strip()
+        if not summary:
+            raise ValueError("tester response rejected: summary must explain what will be validated")
+        return {
+            "response_type": "plan",
+            "summary": summary,
+            "plan": payload.get("plan", ""),
+            "patches": [],
+            "post_actions": {
+                "run_tests": True,
+                "test_command": test_command,
+                "run_git_diff": bool(post_actions.get("run_git_diff")),
+            },
+        }
+
     plan = (payload.get("plan") or "").strip()
     if response_type == "plan" and output_quality.looks_like_meta_plan(plan):
         raise ValueError("plan field is a procedure checklist, not a deliverable")
 
-    post_actions = payload.get("post_actions") or {}
     return {
         "response_type": response_type,
         "summary": payload.get("summary", ""),
@@ -200,8 +237,14 @@ def _validate_payload(payload: dict) -> dict:
 
 
 def _safe_repo_path(repo_path: str, rel_path: str) -> Path:
-    root = Path(repo_path).resolve()
-    target = (root / rel_path).resolve()
+    root = Path(repo_path).expanduser()
+    if not root.is_absolute():
+        root = Path.cwd() / root
+    root = root.resolve()
+    target = Path(rel_path).expanduser()
+    if not target.is_absolute():
+        target = root / target
+    target = target.resolve()
     target.relative_to(root)
     return target
 
@@ -230,34 +273,53 @@ def _run_tests_tool(
     workspace: dict | None = None,
     profile: dict | None = None,
 ) -> int:
+    profile = profile or repo_context.detect_project_profile(repo_path)
+    repo_path = profile.get("repo_root") or repo_path
     cmd = repo_context.resolve_test_command(
         repo_path, workspace=workspace, post_actions=post_actions, profile=profile
     )
     if not cmd:
-        _log(log_path, "[tank] no test command configured or detected — skipping tests\n")
-        return 0
+        _log(log_path, "[tank] No automated test command detected.\n")
+        static_cmd = profile.get("static_validation_command")
+        if not static_cmd:
+            _log(log_path, "[tank] no runnable static validation command detected — reporting static review only\n")
+            return 0
+        _log(log_path, f"[tank] running static validation: {static_cmd}\n")
+        post_actions = dict(post_actions or {})
+        post_actions["test_command"] = static_cmd
+        cmd = static_cmd
     repo_error = config.check_repo_path(repo_path)
     if repo_error:
         _log(log_path, f"[tank] error: {repo_error}\n")
         return 1
-    _log(log_path, f"[tank] running tests: {repo_context.format_test_command(cmd)}\n")
+    cwd = str(Path(repo_path).expanduser().resolve())
+    formatted = repo_context.format_test_command(cmd)
+    _log(log_path, "[tank] tester command details\n")
+    _log(log_path, f"[tank] command: {formatted}\n")
+    _log(log_path, f"[tank] working directory: {cwd}\n")
     run_target, use_shell = repo_context.prepare_test_execution(cmd)
     try:
         result = subprocess.run(
             run_target,
-            cwd=repo_path,
+            cwd=cwd,
             shell=use_shell,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-    except NotADirectoryError:
-        _log(log_path, f"[tank] error: repository path is not a valid directory: {repo_path}\n")
+    except (OSError, ValueError) as exc:
+        _log(log_path, f"[tank] tester command failed to start: {type(exc).__name__}: {exc}\n")
+        _log(log_path, f"[tank] command: {formatted}\n")
+        _log(log_path, f"[tank] working directory: {cwd}\n")
         return 1
+    _log(log_path, f"[tank] exit code: {result.returncode}\n")
     if result.stdout:
+        _log(log_path, "[tank] stdout excerpt:\n")
         _log(log_path, result.stdout)
     if result.stderr:
+        _log(log_path, "[tank] stderr excerpt:\n")
         _log(log_path, result.stderr)
-    _log(log_path, f"[tank] test exit code: {result.returncode}\n")
     return result.returncode
 
 
@@ -434,13 +496,62 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
     """
     Phase 1: gather context, call model, return payload for approval or completion.
     """
-    repo_path = ctx.workspace["repo_path"]
-    profile = repo_context.detect_project_profile(repo_path)
+    selected_repo_path = ctx.workspace["repo_path"]
+    profile = repo_context.detect_project_profile(selected_repo_path)
+    repo_path = profile.get("repo_root") or selected_repo_path
+    if not profile.get("repo_root"):
+        scout = profile.get("repository_scout") or repo_context.repository_scout(selected_repo_path, cfg)
+        _log(ctx.log_path, "[tank] Repository Scout result:\n")
+        _log(ctx.log_path, json.dumps(scout, indent=2, sort_keys=True))
+        raise ValueError(scout.get("error") or "Repository Scout could not identify a project root.")
     selected = repo_context.select_repo_files(repo_path, ctx.task, cfg)
-    files = repo_context.read_repo_files(repo_path, selected, cfg)
+    context_cfg = dict(cfg)
+    context_cfg["_discovered_count"] = repo_context.repo_file_count(repo_path)
+    collection = repo_context.collect_repo_files(repo_path, selected, context_cfg)
+    files = collection["files"]
 
     _log(ctx.log_path, f"[tank] local_agent provider={ctx.provider_id}\n")
+    scout = profile.get("repository_scout") or repo_context.repository_scout(repo_path, cfg)
+    _log(ctx.log_path, "[tank] Repository Scout result:\n")
+    _log(ctx.log_path, json.dumps(scout, indent=2, sort_keys=True))
     _log(ctx.log_path, f"[tank] project profile: {profile['summary']}\n")
+    _log(
+        ctx.log_path,
+        "[tank] repo context collection: "
+        f"root={collection['root']} "
+        f"discovered={collection['discovered']} "
+        f"selected={collection['selected']} "
+        f"included_full={collection['included_full_count']} "
+        f"included_truncated={collection['included_truncated_count']} "
+        f"skipped={collection['skipped_count']} "
+        f"estimated_tokens={collection['context_estimate_tokens']}\n",
+    )
+    for item in collection.get("truncated", []):
+        _log(
+            ctx.log_path,
+            "[tank] included truncated file: "
+            f"{item['path']} original_bytes={item['original_bytes']} "
+            f"limit={item['limit']}\n",
+        )
+    for skipped in collection["skipped"]:
+        _log(
+            ctx.log_path,
+            f"[tank] skipping unreadable file: {skipped['path']} reason: {skipped['reason']}\n",
+        )
+    if selected and not files:
+        _log(
+            ctx.log_path,
+            "[tank] repo context collection failed completely: "
+            f"workspace root={collection['root']} "
+            f"target files={', '.join(selected)} "
+            f"files discovered={collection['discovered']} "
+            f"files included={collection['read']} "
+            f"files skipped={collection['skipped_count']}\n",
+        )
+    _log(
+        ctx.log_path,
+        f"[tank] top included files: {', '.join(collection.get('top_included') or []) or '(none)'}\n",
+    )
     _log(ctx.log_path, f"[tank] read {len(files)} file(s): {', '.join(files) or '(none)'}\n")
 
     if ctx.mission_id is None and repo_context.is_analysis_task(ctx.task):
@@ -453,6 +564,7 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
         return _prepare_analysis_run(ctx, cfg, files, extra_system_prompt, profile)
 
     _role = getattr(ctx, "role", None)
+    tester_context = bool(ctx.mission_id) and _is_tester_context(ctx.stage_name, _role)
     authorized = _authorized_tools(_role)
     tool_descs = (
         {n: TOOL_REGISTRY[n]["description"] for n in authorized if n in TOOL_REGISTRY}
@@ -476,7 +588,12 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
     _log(ctx.log_path, "[tank] model response received\n")
 
     try:
-        payload = _coerce_agent_response(raw, ctx.log_path, strict=ctx.mission_id is not None)
+        payload = _coerce_agent_response(
+            raw,
+            ctx.log_path,
+            strict=ctx.mission_id is not None,
+            tester_context=tester_context,
+        )
     except ValueError:
         if ctx.mission_id is not None:
             _log(ctx.log_path, "[tank] invalid/rejected model response in mission stage — failing run\n")
@@ -484,7 +601,11 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
         _log(ctx.log_path, "[tank] invalid model response — retrying analysis mode\n")
         return _prepare_analysis_run(ctx, cfg, files, extra_system_prompt, profile)
 
-    if payload["response_type"] == "plan" and output_quality.looks_like_meta_plan(payload.get("plan", "")):
+    if (
+        payload["response_type"] == "plan"
+        and not tester_context
+        and output_quality.looks_like_meta_plan(payload.get("plan", ""))
+    ):
         if ctx.mission_id is not None:
             _log(ctx.log_path, "[tank] meta-plan in mission stage — failing run\n")
             raise ValueError("Model returned a lazy meta-plan instead of doing the work")
@@ -546,9 +667,10 @@ def finalize_approved_run(
     authorized_tools: list[str] | None = None,
 ) -> int:
     """Phase 2: apply approved patches and run model-requested follow-ups."""
+    profile = repo_context.detect_project_profile(repo_path)
+    repo_path = profile.get("repo_root") or repo_path
     _log(log_path, "\n[tank] patch approved - applying\n")
     apply_patches(repo_path, payload.get("patches") or [], log_path)
-    profile = repo_context.detect_project_profile(repo_path)
     code = run_post_actions(
         repo_path, payload.get("post_actions") or {}, log_path,
         workspace=workspace, profile=profile,
