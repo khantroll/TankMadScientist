@@ -731,5 +731,24 @@ def _advance_mission_locked(run_id: int) -> bool:
 
 
 def advance_mission(run_id: int) -> bool:
-    with _DAG_LOCK:
-        return _advance_mission_locked(run_id)
+    import mad_scientist_graph
+
+    return mad_scientist_graph.advance_mission(run_id)
+
+
+def start_mission(
+    workspace_id: int,
+    goal: str,
+    provider: str | None = None,
+    max_steps: int | None = None,
+    max_fix_loops: int | None = None,
+) -> int:
+    import mad_scientist_graph
+
+    return mad_scientist_graph.start_mission(
+        workspace_id,
+        goal,
+        provider=provider,
+        max_steps=max_steps,
+        max_fix_loops=max_fix_loops,
+    )

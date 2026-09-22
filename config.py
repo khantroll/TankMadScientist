@@ -72,5 +72,10 @@ LOG_TAIL_LINES = int(os.environ.get("TANK_LOG_TAIL_LINES", "200"))
 # Max bytes of a prior run's output to inject when chaining runs.
 CHAIN_RUN_MAX_BYTES = int(os.environ.get("TANK_CHAIN_RUN_MAX_BYTES", "48000"))
 
+# Emit HTML comments showing approval-render decisions for local UI debugging.
+DEBUG_APPROVAL_RENDER = os.environ.get("TANK_DEBUG_APPROVAL_RENDER", "").lower() in {
+    "1", "true", "yes", "on"
+}
+
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)

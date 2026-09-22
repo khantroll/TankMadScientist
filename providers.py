@@ -53,7 +53,7 @@ def load_providers():
     global _registry, _default_provider
     path = config.PROVIDERS_FILE
     try:
-        with open(path) as f:
+        with open(path, "r", encoding="utf-8") as f:
             doc = yaml.safe_load(f) or {}
     except FileNotFoundError:
         _registry = {
@@ -76,6 +76,36 @@ def list_providers() -> list[tuple[str, str]]:
         (pid, cfg.get("label") or pid)
         for pid, cfg in _registry.items()
     ]
+
+
+def grouped_provider_options(include_types: set[str] | None = None) -> list[dict]:
+    groups = [
+        ("local_agent", "Tank-Controlled Autonomous Agents"),
+        ("openai_compatible", "Advisory Chat LLMs"),
+    ]
+    if include_types:
+        groups = [(ptype, label) for ptype, label in groups if ptype in include_types]
+
+    result = []
+    used = set()
+    for ptype, label in groups:
+        options = [
+            (pid, cfg.get("label") or pid)
+            for pid, cfg in _registry.items()
+            if cfg.get("type") == ptype
+        ]
+        if options:
+            result.append({"label": label, "options": options})
+            used.update(pid for pid, _ in options)
+
+    other = [
+        (pid, cfg.get("label") or pid)
+        for pid, cfg in _registry.items()
+        if pid not in used and (include_types is None or cfg.get("type") in include_types)
+    ]
+    if other:
+        result.append({"label": "Other Providers", "options": other})
+    return result
 
 
 def provider_key_status(provider_id: str) -> dict:
@@ -173,6 +203,21 @@ def _write_log_line(log_path: str, line: str):
             f.write("\n")
 
 
+def _safe_provider_detail(ctx: RunContext, cfg: dict) -> str:
+    ptype = cfg.get("type", "unknown")
+    model = cfg.get("model") or "(none)"
+    base_url = cfg.get("base_url") or "(none)"
+    return (
+        f"provider={ctx.provider_id} type={ptype} "
+        f"model={model} base_url={base_url}"
+    )
+
+
+def _log_provider_exception(ctx: RunContext, cfg: dict, exc: BaseException) -> None:
+    _write_log_line(ctx.log_path, f"[tank] provider error: {_safe_provider_detail(ctx, cfg)}")
+    _write_log_line(ctx.log_path, f"[tank] exception: {type(exc).__name__}: {exc}")
+
+
 def _effective_task(ctx: RunContext) -> str:
     if not ctx.prior_run_context:
         return ctx.task
@@ -200,13 +245,17 @@ def _build_claude_command(ctx: RunContext) -> list[str]:
 
 
 def _run_claude_code(ctx: RunContext) -> subprocess.Popen:
-    repo_error = config.check_repo_path(ctx.workspace.get("repo_path"))
+    profile = repo_context.detect_project_profile(ctx.workspace.get("repo_path"))
+    repo_root = profile.get("repo_root")
+    if not repo_root:
+        raise NotADirectoryError(profile.get("test_command_reason") or "Repository Scout could not identify a project root.")
+    repo_error = config.check_repo_path(repo_root)
     if repo_error:
         raise NotADirectoryError(repo_error)
     cmd = _build_claude_command(ctx)
     return subprocess.Popen(
         cmd,
-        cwd=ctx.workspace["repo_path"],
+        cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -246,8 +295,16 @@ def _repo_context_message(ctx: RunContext, cfg: dict, task: str) -> str:
             task, {}, prior_run_context=ctx.prior_run_context
         )
     profile = repo_context.detect_project_profile(repo)
-    selected = repo_context.select_repo_files(repo, task, cfg)
-    files = repo_context.read_repo_files(repo, selected, cfg)
+    repo_root = profile.get("repo_root") or repo
+    selected = repo_context.select_repo_files(repo_root, task, cfg)
+    context_cfg = dict(cfg)
+    context_cfg["_discovered_count"] = repo_context.repo_file_count(repo_root)
+    files = repo_context.collect_repo_files(repo_root, selected, context_cfg)["files"]
+    _write_log_line(
+        ctx.log_path,
+        f"[tank] Repository Scout root: {profile.get('repo_root') or '(not found)'} "
+        f"confidence={profile.get('confidence', 'low')}\n",
+    )
     _write_log_line(
         ctx.log_path,
         f"[tank] read {len(files)} file(s) for context: {', '.join(files) or '(none)'}\n",
@@ -455,7 +512,7 @@ def _start_claude_code(
 
     def _watch():
         try:
-            with open(ctx.log_path, "a", buffering=1) as f:
+            with open(ctx.log_path, "a", encoding="utf-8", buffering=1) as f:
                 for line in proc.stdout:
                     if ctx.cancel_event.is_set():
                         break
@@ -482,7 +539,10 @@ def _start_openai_compatible(
             else:
                 code = _stream_openai_compatible(ctx, cfg)
         except ProviderError as exc:
-            _write_log_line(ctx.log_path, f"[tank] error: {exc}\n")
+            _log_provider_exception(ctx, cfg, exc)
+            code = 1
+        except Exception as exc:
+            _log_provider_exception(ctx, cfg, exc)
             code = 1
         if ctx.cancel_event.is_set():
             on_finished(1)
@@ -509,7 +569,11 @@ def _start_local_agent(
                 ctx, cfg, extra_system_prompt=ctx.system_prompt
             )
         except (ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-            _write_log_line(ctx.log_path, f"[tank] error: {exc}\n")
+            _log_provider_exception(ctx, cfg, exc)
+            on_finished(1)
+            return
+        except Exception as exc:
+            _log_provider_exception(ctx, cfg, exc)
             on_finished(1)
             return
 

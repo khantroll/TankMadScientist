@@ -13,6 +13,7 @@ patch-approval gate: it only ever creates new runs with status
 fix-loop is bounded by max_fix_loops and tracked per-mission.
 """
 import os
+import re
 
 import yaml
 
@@ -22,10 +23,31 @@ import models
 _templates: dict = {}
 
 
+def _short_excerpt(text: str, max_chars: int = 900) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
+
+def _run_failure_detail(run) -> str:
+    pieces = []
+    if run["error"]:
+        pieces.append(str(run["error"]))
+    log_path = run["log_path"]
+    if log_path and os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                pieces.append(_short_excerpt(f.read()[-2400:]))
+        except OSError as exc:
+            pieces.append(f"Could not read run log: {type(exc).__name__}: {exc}")
+    return " | ".join(piece for piece in pieces if piece) or f"Run #{run['id']} ended {run['status']}"
+
+
 def load_templates():
     global _templates
     try:
-        with open(config.MISSION_TEMPLATES_FILE) as f:
+        with open(config.MISSION_TEMPLATES_FILE, "r", encoding="utf-8") as f:
             doc = yaml.safe_load(f) or {}
     except FileNotFoundError:
         _templates = {}
@@ -270,9 +292,13 @@ def advance_mission(run_id: int) -> None:
                 return
             max_loops = template.get("max_fix_loops", config.DEFAULT_MAX_FIX_LOOPS)
             if mission["fix_loop_count"] >= max_loops:
+                detail = _run_failure_detail(run)
                 models.update_mission(
                     mission["id"], status="failed",
-                    note=f"Fix-loop limit reached ({max_loops}) after stage '{stage['name']}' failed.",
+                    note=(
+                        f"Fix-loop limit reached ({max_loops}) after stage "
+                        f"'{stage['name']}' failed. Last failure: {detail}"
+                    ),
                 )
                 return
             jump_target = on_fail.split(":", 1)[1]

@@ -19,9 +19,11 @@ import config
 import git_sync
 import log_format
 import mad_scientist
+import mad_scientist_graph
 import mission
 import models
 import providers
+import run_approval
 import scheduler
 import session_manager
 
@@ -199,6 +201,7 @@ def _dashboard_context(error=None, form=None):
     return {
         "workspaces": workspaces,
         "providers": providers.list_providers(),
+        "provider_groups": providers.grouped_provider_options(),
         "default_provider": providers.get_default_provider(),
         "error": error,
         "form": form or {},
@@ -213,9 +216,21 @@ def _mission_list_context(ws):
             {"mission": m, "runs": models.list_mission_runs(m["id"])}
             for m in missions
         ],
+        "mad_scientist_entries": mad_scientist_graph.graph_entries_for_workspace(ws["id"]),
         "workspace": ws,
         "providers": providers.list_providers(),
+        "provider_groups": providers.grouped_provider_options(),
         "default_provider": providers.get_default_provider(),
+    }
+
+
+def _awaiting_approval_runs(workspace_id, limit=20):
+    return run_approval.actionable_approval_runs(workspace_id, limit=limit)
+
+
+def _workspace_approval_context(ws):
+    return {
+        "awaiting_approval_runs": _awaiting_approval_runs(ws["id"]),
     }
 
 
@@ -289,7 +304,7 @@ def delete_workspace(slug):
         if ws is None:
             return redirect(url_for("dashboard"))
         roles = models.list_roles(ws["id"])
-        runs = models.list_runs(workspace_id=ws["id"], limit=30)
+        runs = [run_approval.run_view(run) for run in models.list_runs(workspace_id=ws["id"], limit=30)]
         chainable_runs = models.list_chainable_runs(ws["id"], limit=20)
         return render_template(
             "workspace.html",
@@ -301,6 +316,7 @@ def delete_workspace(slug):
             delete_error=str(exc),
             tank_version=config.TANK_VERSION,
             crew_provider_ids=_crew_provider_ids(),
+            **_workspace_approval_context(ws),
             **_mission_list_context(ws),
         )
     return redirect(url_for("dashboard"))
@@ -321,7 +337,7 @@ def workspace_detail(slug):
     if ws is None:
         return "Workspace not found", 404
     roles = models.list_roles(ws["id"])
-    runs = models.list_runs(workspace_id=ws["id"], limit=30)
+    runs = [run_approval.run_view(run) for run in models.list_runs(workspace_id=ws["id"], limit=30)]
     chainable_runs = models.list_chainable_runs(ws["id"], limit=20)
     return render_template(
         "workspace.html",
@@ -332,6 +348,7 @@ def workspace_detail(slug):
         repo_error=config.check_repo_path(ws["repo_path"]),
         tank_version=config.TANK_VERSION,
         crew_provider_ids=_crew_provider_ids(),
+        **_workspace_approval_context(ws),
         **_mission_list_context(ws),
     )
 
@@ -366,7 +383,7 @@ def create_run(slug):
             resp.headers["HX-Retarget"] = "#run-form-error"
             resp.headers["HX-Reswap"] = "innerHTML"
             return resp
-    runs = models.list_runs(workspace_id=ws["id"], limit=30)
+    runs = [run_approval.run_view(run) for run in models.list_runs(workspace_id=ws["id"], limit=30)]
     return render_template("partials/run_list.html", runs=runs, crew_provider_ids=_crew_provider_ids())
 
 
@@ -376,8 +393,16 @@ def run_list_partial(slug):
     ws = models.get_workspace(slug)
     if ws is None:
         return "Workspace not found", 404
-    runs = models.list_runs(workspace_id=ws["id"], limit=30)
+    runs = [run_approval.run_view(run) for run in models.list_runs(workspace_id=ws["id"], limit=30)]
     return render_template("partials/run_list.html", runs=runs, crew_provider_ids=_crew_provider_ids())
+
+
+@app.route("/partials/approval-alert/<slug>")
+def approval_alert_partial(slug):
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    return render_template("partials/approval_alert.html", **_workspace_approval_context(ws))
 
 
 def _render_run_output(run, payload=None):
@@ -391,6 +416,7 @@ def _render_run_output(run, payload=None):
         output=output,
         formatted=formatted,
         payload=payload,
+        approval=run_approval.approval_state(run),
     )
 
 
@@ -419,10 +445,14 @@ def crew_step_row():
         for pid, lbl in providers.list_providers()
         if providers.get_provider_type(pid) != "crew" and pid != "crew_builder"
     ]
+    leaf_provider_groups = providers.grouped_provider_options(
+        include_types={"local_agent", "openai_compatible", "claude_code"}
+    )
     return render_template(
         "partials/crew_step_row.html",
         roles=roles,
         leaf_providers=leaf_providers,
+        leaf_provider_groups=leaf_provider_groups,
     )
 
 
@@ -515,7 +545,7 @@ def launch_crew(slug):
     run_id = models.create_adhoc_crew_run(ws["id"], crew_task)
     session_manager.launch_crew_builder(run_id, crew_cfg)
 
-    runs = models.list_runs(workspace_id=ws["id"], limit=30)
+    runs = [run_approval.run_view(run) for run in models.list_runs(workspace_id=ws["id"], limit=30)]
     resp = make_response(
         render_template(
             "partials/run_list.html",
@@ -542,7 +572,7 @@ def run_children(run_id):
     for child in child_rows:
         role = models.get_role_by_id(child["role_id"]) if child["role_id"] else None
         tools = _la._authorized_tools(dict(role) if role else None)
-        children.append({"run": child, "tools": tools or []})
+        children.append({"run": run_approval.run_view(child), "tools": tools or []})
 
     return render_template(
         "partials/run_children.html",
@@ -664,6 +694,41 @@ def mission_list_partial(slug):
     return render_template("partials/mission_list.html", **_mission_list_context(ws))
 
 
+@app.route("/partials/mad-scientist/<slug>")
+def mad_scientist_graph_partial(slug):
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    return render_template(
+        "partials/mad_scientist_graph.html",
+        workspace=ws,
+        mad_scientist_entries=mad_scientist_graph.graph_entries_for_workspace(ws["id"]),
+    )
+
+
+@app.route("/workspaces/<slug>/mad-scientist/<int:graph_mission_id>/retry-scout", methods=["POST"])
+def retry_mad_scientist_scout(slug, graph_mission_id):
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    try:
+        mad_scientist_graph.retry_scout(graph_mission_id)
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+    resp = make_response(
+        render_template(
+            "partials/mad_scientist_graph.html",
+            workspace=ws,
+            mad_scientist_entries=mad_scientist_graph.graph_entries_for_workspace(ws["id"]),
+        )
+    )
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
 # ---------- git sync ----------
 
 @app.route("/workspaces/<slug>/git/<action>", methods=["POST"])
@@ -695,6 +760,7 @@ def schedules_page():
         workspaces=workspaces,
         roles_by_workspace=roles_by_workspace,
         providers=providers.list_providers(),
+        provider_groups=providers.grouped_provider_options(),
         default_provider=providers.get_default_provider(),
     )
 

@@ -1,22 +1,18 @@
-{% if run.status == 'awaiting_approval' %}
+{% if approval and approval.approval_available %}
 <div class="approval-gate" id="approval-gate-{{ run.id }}">
   <div class="approval-copy">
     <strong>Awaiting approval</strong>
     <span>Review this run output before approving, rejecting, or cancelling.</span>
   </div>
   <div class="approval-actions">
-    <button type="button"
-            class="btn btn-approve btn-xs"
-            hx-post="{{ url_for('approve_run_patch', run_id=run.id) }}"
-            hx-swap="none">
-      ✓ Approve
-    </button>
-    <button type="button"
-            class="btn btn-cancel btn-xs"
-            hx-post="{{ url_for('reject_run_patch', run_id=run.id) }}"
-            hx-swap="none">
-      Reject
-    </button>
+    {% include "partials/approval_controls.html" %}
+  </div>
+</div>
+{% elif run.status == 'awaiting_approval' %}
+<div class="approval-gate approval-gate--missing" id="approval-gate-{{ run.id }}">
+  <div class="approval-copy">
+    <strong>Awaiting approval</strong>
+    <span>This run has no actionable patch payload attached.</span>
   </div>
 </div>
 {% endif %}

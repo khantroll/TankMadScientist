@@ -43,11 +43,15 @@
       </select>
       <label for="resume-provider-{{ m.id }}">Provider for next stage</label>
       <select name="provider" id="resume-provider-{{ m.id }}">
-        {% for pid, label in providers %}
-          <option value="{{ pid }}"
-            {% if pid == (m.provider or workspace.default_provider or default_provider) %}selected{% endif %}>
-            {{ label }}
-          </option>
+        {% for group in provider_groups %}
+          <optgroup label="{{ group.label }}">
+            {% for pid, label in group.options %}
+              <option value="{{ pid }}"
+                {% if pid == (m.provider or workspace.default_provider or default_provider) %}selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </optgroup>
         {% endfor %}
       </select>
       <button class="btn btn-sm" type="submit">Resume mission</button>
