@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "Flask==3.0.3",
     "APScheduler==3.10.4",
-    "PyYAML==6.0.1",
+    "PyYAML==6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -21,4 +21,50 @@ production = ["gunicorn>=22.0"]
 tank = "app:main"
 
 [tool.setuptools]
-py-modules = ["app", "config", "git_sync", "local_agent", "log_format", "mad_scientist", "mission", "models", "output_quality", "providers", "repo_context", "run_chain", "scheduler", "session_manager"]
+py-modules = [
+    "app",
+    "config",
+    "git_sync",
+    "local_agent",
+    "log_format",
+    "mad_scientist",
+    "mad_scientist_graph",
+    "mission",
+    "models",
+    "orchestrator",
+    "output_quality",
+    "prompt_library",
+    "providers",
+    "repo_context",
+    "run_chain",
+    "scheduler",
+    "session_manager",
+    "tank_cli",
+]
+include-package-data = true
+
+[tool.setuptools.data-files]
+"share/tank" = [
+    "workspaces.yaml",
+    "providers.yaml",
+    "mission_templates.yaml",
+    "README.md",
+]
+"share/tank/templates" = [
+    "templates/base.html",
+    "templates/dashboard.html",
+    "templates/schedules.html",
+    "templates/workspace.html",
+]
+"share/tank/templates/partials" = [
+    "templates/partials/crew_step_row.html",
+    "templates/partials/git_result.html",
+    "templates/partials/mission_list.html",
+    "templates/partials/run_children.html",
+    "templates/partials/run_list.html",
+    "templates/partials/run_output.html",
+    "templates/partials/workspace_cards.html",
+]
+"share/tank/static/css" = ["static/css/style.css"]
+"share/tank/static/js" = ["static/js/htmx.min.js", "static/js/tank.js"]
+"share/tank/scripts" = ["scripts/validate_mad_scientist_graph.py"]

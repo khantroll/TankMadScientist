@@ -8,6 +8,7 @@ Output streams to a per-run log file under data/logs/, which the
 dashboard tails for the live output panel.
 """
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -55,6 +56,47 @@ def _terminate_proc(proc: subprocess.Popen) -> None:
 
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+INTERRUPTED_ERROR = "Interrupted by process restart"
+
+
+def _sync_graph_status(run_id: int) -> None:
+    import mad_scientist_graph as graph
+
+    graph.sync_run_status(run_id)
+
+
+def sweep_orphaned_runs() -> list[int]:
+    """Fail runs still marked running when the process starts.
+
+    awaiting_approval is a durable pause and is left alone. Each swept run
+    goes through the same mission completion path as a real failure so
+    fix-loop counters, graph fan-in, and mission status catch up. A swept
+    run is not auto-resumed.
+    """
+    swept = []
+    for run in models.list_running_runs():
+        try:
+            if run["log_path"]:
+                local_agent._log(
+                    run["log_path"],
+                    "\n[tank] run interrupted by process restart\n",
+                )
+            models.update_run(
+                run["id"],
+                status="failed",
+                error=INTERRUPTED_ERROR,
+                finished_at=_now(),
+                pid=None,
+            )
+            mission.advance_mission(run["id"])
+            swept.append(run["id"])
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "failed to sweep orphaned run %s", run["id"]
+            )
+    return swept
 
 
 def launch_run(run_id):
@@ -165,6 +207,7 @@ def launch_run(run_id):
         log_path=log_path,
         started_at=_now(),
     )
+    _sync_graph_status(run_id)
 
 
 def launch_pending():

@@ -551,6 +551,9 @@ def _start_local_agent(
             agent_payload=json.dumps(payload),
             status="awaiting_approval",
         )
+        import mad_scientist_graph as graph
+
+        graph.sync_run_status(ctx.run_id)
 
     threading.Thread(target=_watch, daemon=True).start()
     return None

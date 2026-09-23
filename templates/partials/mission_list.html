@@ -27,7 +27,54 @@
     {% if m.note %}
       <div class="mission-note">{{ m.note }}</div>
     {% endif %}
-    {% if m.status in ('failed', 'aborted') and mruns %}
+    {% if entry.graph %}
+      {% set g = entry.graph %}
+      <div class="mission-banner">
+        Graph {{ g.status }}
+        {% if g.spend_cap_usd is not none %}
+          · spend ${{ '%.4f'|format(g.spend_usd or 0) }} / ${{ '%.4f'|format(g.spend_cap_usd) }}
+        {% elif g.spend_usd %}
+          · spend ${{ '%.4f'|format(g.spend_usd) }}
+        {% endif %}
+        {% if g.summary %}· {{ g.summary }}{% endif %}
+      </div>
+      <ul class="graph-steps">
+        {% for step in g.steps %}
+        <li class="graph-step">
+          <span class="status-badge status-{{ step.status }}">{{ step.status }}</span>
+          <span>{{ step.name }}</span>
+          <span class="mono">{{ step.role }}</span>
+          {% if step.depends_on %}
+            <span class="mono">depends on {{ step.depends_on | join(', ') }}</span>
+          {% endif %}
+          {% if step.unresolved %}
+            <span class="mono">unresolved {{ step.unresolved | join(', ') }}</span>
+          {% endif %}
+          {% if step.evaluation %}
+            <span class="mono">evaluation {{ step.evaluation.verdict }}</span>
+          {% endif %}
+          {% if step.awaiting_run_id %}
+            <button class="btn btn-sm"
+                    hx-post="{{ url_for('approve_run_patch', run_id=step.awaiting_run_id) }}"
+                    hx-swap="none">Approve #{{ step.awaiting_run_id }}</button>
+            <button class="btn btn-sm btn-cancel"
+                    hx-post="{{ url_for('reject_run_patch', run_id=step.awaiting_run_id) }}"
+                    hx-swap="none">Reject</button>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if entry.graph and entry.graph.can_retry_scout %}
+    <form class="mission-resume"
+          hx-post="{{ url_for('retry_mad_scientist_scout', slug=workspace.slug, mission_id=m.id) }}"
+          hx-target="#mission-list"
+          hx-swap="innerHTML">
+      <p class="form-hint" style="margin:0 0 10px;">The scout failed before a plan was stored. Retry it on this workspace.</p>
+      <button class="btn btn-sm" type="submit">Retry scout</button>
+    </form>
+    {% endif %}
+    {% if m.template != 'mad_scientist' and m.status in ('failed', 'aborted') and mruns %}
     <form class="mission-resume"
           hx-post="{{ url_for('resume_mission_route', slug=workspace.slug, mission_id=m.id) }}"
           hx-target="#mission-list"

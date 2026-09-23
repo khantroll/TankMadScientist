@@ -93,7 +93,8 @@ All via environment variables (see `config.py`):
 | `TANK_MISSION_TEMPLATES_FILE` | `./mission_templates.yaml` | mission stage definitions |
 | `TANK_DEFAULT_MAX_FIX_LOOPS` | `3` | fallback fix-loop retry cap |
 | `TANK_CLAUDE_BIN` | `claude` | path to the Claude Code CLI |
-| `TANK_MAX_PARALLEL_RUNS` | `3` | concurrency cap |
+| `TANK_MAX_PARALLEL_RUNS` | `3` | global concurrency cap |
+| `TANK_MAX_PARALLEL_RUNS_PER_MISSION` | `0` | extra Mad Scientist cap per mission; `0` disables it |
 | `TANK_POLL_INTERVAL` | `2` | seconds between queue checks |
 | `TANK_HOST` / `TANK_PORT` | `127.0.0.1` / `8742` | bind address |
 
@@ -220,35 +221,51 @@ The workspace page also includes **Start Mad Scientist Mission**. This
 mode does not use a fixed YAML stage list. Tank creates a compatibility
 parent run, queues a first `Scout / Repo Cartographer` attempt, then
 parses the scout's structured JSON execution plan into durable graph
-rows:
+rows owned by `mad_scientist_graph.py`:
 
-- `mad_scientist_missions` stores the graph mission
-- `mad_scientist_steps` stores logical planned steps
+- `mad_scientist_missions` stores the graph mission, including an optional
+  `spend_cap_usd` and the spend accumulated from provider-reported
+  `cost_usd`
+- `mad_scientist_steps` stores logical planned steps and their status
 - `mad_scientist_step_dependencies` stores DAG edges
 - `mad_scientist_attempts` maps normal Tank runs to attempts against a
-  logical step
+  logical step (`scout`, `execute`, `fixer`, or `retry`)
+- `evaluations` stores a pass/fail critique when a tester or reviewer
+  attempt finishes
 
-Generated steps run from that persistent graph. Tank queues every ready
-logical step whose dependency edges point only to completed steps, then
-the normal global `TANK_MAX_PARALLEL_RUNS` cap decides how many attempt
-runs actually execute at once. When a step has multiple dependencies,
-Tank sets `run.parent_run_id` to the newest completed dependency run for
-compatibility, but injects localized context from **all direct
-dependency steps** into the generated task prompt.
+`parent_run_id` remains compatibility metadata. Generated steps run from
+the graph. Tank queues every ready logical step whose dependency edges
+point only to completed steps. The global `TANK_MAX_PARALLEL_RUNS` cap
+still decides how many attempt runs actually execute at once. Set
+`TANK_MAX_PARALLEL_RUNS_PER_MISSION` when one wide mission should not
+occupy every slot. When a step has multiple dependencies, Tank sets
+`run.parent_run_id` to the newest completed dependency run, and injects
+localized context from **all direct dependency steps** into the task.
 
-If a generated implementation step fails, Tank creates a bounded fixer
-attempt on the same logical step, then creates a retry attempt on that
-same step after the fixer succeeds. The cap comes from the form's Fix
-loops field, falling back to `TANK_DEFAULT_MAX_FIX_LOOPS`.
+Step status follows the attempt run, including `awaiting_approval`, so
+the graph does not stay `queued` while a patch is waiting. Approve and
+reject controls for that run are on the graph row.
+
+If a generated step fails, Tank creates a bounded fixer attempt on the
+**same** logical step, then a retry attempt on that step after the fixer
+succeeds. The cap comes from the form's Fix loops field, falling back to
+`TANK_DEFAULT_MAX_FIX_LOOPS`. A spend cap stops further scheduling once
+recorded cost reaches it. Providers that do not report usage cost do not
+increment spend.
 
 Mad Scientist runs also update local `workspace_memory` in SQLite with
 project profile facts, important paths, changed paths, successful step
 summaries, and known pitfalls. Future Mad Scientist scouts for the same
 workspace receive that memory in their prompt.
 
+A process restart marks leftover `running` rows failed and advances their
+missions through the normal failure path. `awaiting_approval` rows are
+left in place. That sweep does not auto-resume the interrupted run.
+
 Run `python scripts/validate_mad_scientist_graph.py` for a lightweight
 SQLite-only validation of graph storage, dependency scheduling, localized
-dependency context, fixer/retry attempts, and compatibility run creation.
+dependency context, fixer/retry attempts, spend cap, approval sync,
+restart sweep, and workspace ownership checks.
 
 ## Production deployment
 
@@ -274,7 +291,8 @@ probably want next:
   via `--mcp-config`. API providers ignore it.
 - **Auth**: there isn't any. Fine on localhost/behind a VPN; add
   Flask-Login or put it behind your SSO/reverse-proxy auth before
-  exposing it.
+  exposing it. Git push/pull and local-agent patch approval should stay
+  on your own machine until that auth exists.
 - **Structured log parsing**: runs currently store raw
   `stream-json` lines. Parsing those into distinct tool-call /
   text-block UI elements (instead of one raw text blob) is the

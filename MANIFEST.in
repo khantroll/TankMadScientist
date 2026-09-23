@@ -1,0 +1,11 @@
+include README.md
+include requirements.txt
+include pyproject.toml
+include *.yaml
+recursive-include templates *.html
+recursive-include static *.css
+recursive-include static *.js
+recursive-include scripts *.py
+global-exclude *.bak
+global-exclude *.bak2
+prune data
