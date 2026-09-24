@@ -9,7 +9,8 @@ Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQL
 - **Updated:** 2026-09-24T21:25:01Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `0ff9f657e45d7f33b7bf66464ef7e6cb4f7fab85` — squash-merge of PR #5. Jeffrey accepted the Mission Control ↔ Mad Scientist Lab contract. Source of truth is `docs/MISSION_CONTROL_LAB_CONTRACT.md`. The file header still says draft; GitHub merge state wins.
-- **Open PRs (verified):** #1 and #2, both draft. Do not merge either. Do not open a third recovery PR.
+- **Open PRs (verified):** #1, #2, and #6, all draft. Do not merge #1 or #2. Do not open a third recovery PR.
+  - PR #6 — Audit PR #2 against Mission Control ↔ Lab contract (`cursor/pr2-contract-audit-a9d7`) — this docs-only draft
   - PR #1 — Recover local Tank graph orchestration and repository scouting (`local-recovered`, `712599406ee58761d6ea7cd7157ed7045573e53a`) — parts bin; draft; do not merge
   - PR #2 — Reconstruct the Mad Scientist graph on the existing Tank schema (`cursor/tank-graph-recovery-c38e`, `c9695e9762d2427d7b5f31053c37d27c184445ea`) — preferred graph spine; draft; graph validator reported passing by that PR, not re-run in this audit; do not merge
 - **Audit:** `docs/PR2_CONTRACT_AUDIT.md` scores PR #2 against the contract: 8 aligned, 10 partial, 5 missing. Gap-fill comes from #1 onto the #2 line.
