@@ -6,20 +6,20 @@ Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQL
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T21:52:00Z
+- **Updated:** 2026-09-24T23:21:00Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `bb2abef955507f67254f479a6a618c7db3ca827d` — squash-merge of PR #6. Jeffrey accepted the contract (PR #5, `0ff9f657`) and the PR #2 audit (PR #6). Source of truth remains `docs/MISSION_CONTROL_LAB_CONTRACT.md`. `docs/PR2_CONTRACT_AUDIT.md` is the accepted gap list.
-- **Open drafts (verified, do not merge):**
+- **Canonical main (verified):** `9f041ca3124f0f8e5c5f465eed19f042bce48a78` — squash-merge of PR #7 ("Fill contract gaps on the PR #2 graph"), merged 2026-09-24T23:09:12Z. If this checkpoint disagrees with GitHub, GitHub wins.
+- **Lineage on main:** handoff PR #3 (`b40190f`) and STATUS reconcile PR #4 (`d27e6e5`); contract PR #5 (`0ff9f657`); audit PR #6 (`bb2abef`); gap-fill PR #7 (`9f041ca`). Source of truth remains `docs/MISSION_CONTROL_LAB_CONTRACT.md`. `docs/PR2_CONTRACT_AUDIT.md` is the accepted gap list that #7 filled on the PR #2 spine. Lab plans; Mission Control executes.
+- **Open drafts (verified, do not merge or close):**
   - PR #1 — parts bin (`local-recovered`, `712599406ee58761d6ea7cd7157ed7045573e53a`)
   - PR #2 — graph spine (`cursor/tank-graph-recovery-c38e`, `c9695e9762d2427d7b5f31053c37d27c184445ea`)
-- **This work:** Draft PR #7 — https://github.com/khantroll/TankMadScientist/pull/7 — gap-fill plus thin-vertical scaffolding on the #2 line. Branch `cursor/graph-breakers-gap-fill-92b3`, implementation `4b40f28b9c5d0b58cf33019971342b052711aa01`, from PR #2 head with `main` `bb2abef` merged in. Not a third recovery/reconstruction of the graph. `mad_scientist_graph.py` and the `mad_scientist_*` tables stay the PR #2 scheduler and DDL, with columns and behavior added on top.
-- **Ported from #1:** attempt stack on the graph card, stored stop reason, Approve/Reject only when `awaiting_approval` has a plan or patch payload, cyclic plans rejected before materialize, tester/reviewer success requires a real test/build/diff command and uses the tool exit code.
-- **Breakers on the advance path:** per-step attempt cap default 3, mission spend cap default $5, token cap column default 500000, `BLOCKED_HUMAN` plus reason, repeated patch hash or error hash halts that step. A blocked step does not freeze an independent ready branch. Spend, token, and a stuck DAG move the mission to `BLOCKED_HUMAN`.
-- **Token gap:** the cap is compared only after a provider reports tokens (`usage.total_tokens`, or prompt + completion). `local_agent` copies that onto the run payload. Providers that omit usage never increment `tokens_used` and do not trip the cap. That is not treated as zero.
-- **Not in this slice:** Reuse → Adapt → Generate, crew confirmation, replacing providers.yaml or workspaces config, log excerpts in step prompts, overwriting fixer step task text, merging or closing #1 or #2.
-- **Dogfood:** no live JWT-auth run was executed. Validators passed: `scripts/validate_mad_scientist_graph.py` and `scripts/validate_tester_stage_validation.py`. Manual dogfood steps are in the PR body.
-- **Merged:** PR #3 (handoff), PR #4 (STATUS reconcile), PR #5 (contract), PR #6 (audit).
-- **Next action:** Jeffrey reviews draft PR #7. Do not merge or close #1 or #2. After review, run the manual JWT-auth dogfood in a real repo. Lab creations still execute only as Mission Control attempts.
+- #7 landed the gap-fill onto `main`. #1 and #2 themselves are still open drafts. Their fate is undecided.
+- **Now on main from #7:** attempt stack on the graph card; stored stop reason and `BLOCKED_HUMAN`; Approve/Reject only when `awaiting_approval` has a plan or patch payload; cyclic plans rejected before materialize; tester/reviewer success requires a real test/build/diff command and uses the tool exit code. Breakers: 3 attempts per step, mission spend cap $5, token cap 500000 only when a provider reports usage, repeated patch hash or error hash. A blocked step does not freeze an independent ready sibling. Missing provider usage is not treated as zero tokens.
+- **Not in #7:** Pattern Synthesis (Reuse → Adapt → Generate) and crew confirmation; live JWT-auth dogfood in a real repo. Lab creations still execute only as Mission Control attempts.
+- **Next action:**
+  1. **Pattern Synthesis** — the Mad Scientist invent path: Reuse → Adapt → Generate (contract section 6), plus crew confirmation before a generated crew becomes a durable default. Not started.
+  2. **JWT-auth dogfood** — run a JWT-auth-style mission in a real repo as the thin-vertical acceptance bar (contract section 12). #7 shipped the gates and breakers; no live dogfood was executed.
+  3. **Decide the fate of drafts #1 and #2** (keep, close, or fold). Do not merge or close them until that decision.
 
 ## Handoff protocol
 
