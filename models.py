@@ -121,6 +121,10 @@ CREATE TABLE IF NOT EXISTS mad_scientist_missions (
     spend_cap_usd REAL,
     spend_usd REAL NOT NULL DEFAULT 0,
     max_parallel_steps INTEGER,
+    blocked_reason TEXT,
+    token_cap INTEGER,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -137,6 +141,7 @@ CREATE TABLE IF NOT EXISTS mad_scientist_steps (
     status TEXT NOT NULL DEFAULT 'planned',
     position INTEGER NOT NULL DEFAULT 0,
     unresolved_dependencies TEXT,
+    blocked_reason TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(graph_mission_id, name)
@@ -155,6 +160,9 @@ CREATE TABLE IF NOT EXISTS mad_scientist_attempts (
     attempt_kind TEXT NOT NULL,
     status TEXT NOT NULL,
     cost_usd REAL,
+    tokens INTEGER,
+    patch_hash TEXT,
+    error_hash TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -200,6 +208,14 @@ def _migrate_db(conn):
         ("missions", "max_steps", "INTEGER"),
         ("missions", "max_fix_loops", "INTEGER"),
         ("mad_scientist_missions", "max_parallel_steps", "INTEGER"),
+        ("mad_scientist_missions", "blocked_reason", "TEXT"),
+        ("mad_scientist_missions", "token_cap", "INTEGER"),
+        ("mad_scientist_missions", "tokens_used", "INTEGER NOT NULL DEFAULT 0"),
+        ("mad_scientist_missions", "max_attempts", "INTEGER"),
+        ("mad_scientist_steps", "blocked_reason", "TEXT"),
+        ("mad_scientist_attempts", "tokens", "INTEGER"),
+        ("mad_scientist_attempts", "patch_hash", "TEXT"),
+        ("mad_scientist_attempts", "error_hash", "TEXT"),
     ]
     for table, column, col_type in migrations:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}

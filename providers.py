@@ -549,7 +549,9 @@ def _start_local_agent(
 
         if payload["response_type"] == "plan":
             post_actions = payload.get("post_actions") or {}
+            mode = local_agent.verification_mode(ctx.stage_name, ctx.role)
             code = 0
+            ran = False
             if post_actions.get("run_tests") or post_actions.get("run_git_diff"):
                 auth = local_agent._authorized_tools(ctx.role)
                 code = local_agent.run_post_actions(
@@ -559,15 +561,38 @@ def _start_local_agent(
                     workspace=ctx.workspace,
                     authorized_tools=auth,
                 )
+                ran = True
+                payload["tool_exit_code"] = code
                 local_agent.log_run_outcome(ctx.log_path, code)
             current = models.get_run(ctx.run_id)
             if current and current["status"] == "cancelled":
+                on_finished(1)
+                return
+            command = (post_actions.get("test_command") or "").strip()
+            has_command = (
+                (bool(post_actions.get("run_tests")) and bool(command))
+                or bool(post_actions.get("run_git_diff"))
+            )
+            if mode and not (ran and has_command and code == 0):
+                error = (
+                    f"{mode} cannot complete on a model summary. "
+                    "A real test, build, or diff command must run and exit 0."
+                )
+                if ran and code != 0:
+                    error = f"Verification command exited {code}"
+                models.update_run(
+                    ctx.run_id,
+                    agent_payload=json.dumps(payload),
+                    status="failed",
+                    error=error,
+                )
                 on_finished(1)
                 return
             models.update_run(
                 ctx.run_id,
                 agent_payload=json.dumps(payload),
                 status="done" if code == 0 else "failed",
+                error=None if code == 0 else f"Verification command exited {code}",
             )
             on_finished(code)
             return

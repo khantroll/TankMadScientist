@@ -21,7 +21,6 @@ production = ["gunicorn>=22.0"]
 tank = "app:main"
 
 [tool.setuptools]
-# run_approval.py is not in this tree and nothing imports it, so it is not listed.
 py-modules = [
     "app",
     "config",
@@ -37,6 +36,7 @@ py-modules = [
     "prompt_library",
     "providers",
     "repo_context",
+    "run_approval",
     "run_chain",
     "scheduler",
     "session_manager",
@@ -58,6 +58,7 @@ include-package-data = true
     "templates/workspace.html",
 ]
 "share/tank/templates/partials" = [
+    "templates/partials/approval_controls.html",
     "templates/partials/crew_step_row.html",
     "templates/partials/git_result.html",
     "templates/partials/mission_list.html",
@@ -68,4 +69,7 @@ include-package-data = true
 ]
 "share/tank/static/css" = ["static/css/style.css"]
 "share/tank/static/js" = ["static/js/htmx.min.js", "static/js/tank.js"]
-"share/tank/scripts" = ["scripts/validate_mad_scientist_graph.py"]
+"share/tank/scripts" = [
+    "scripts/validate_mad_scientist_graph.py",
+    "scripts/validate_tester_stage_validation.py",
+]

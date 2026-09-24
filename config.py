@@ -70,9 +70,14 @@ MISSION_TEMPLATES_FILE = os.environ.get(
     "TANK_MISSION_TEMPLATES_FILE", _default_config_file("mission_templates.yaml")
 )
 
-# Hard cap on automatic fix-loop iterations per mission, used when a
-# template doesn't specify its own max_fix_loops.
+# Hard cap on attempts for one Mad Scientist step (first run, fixer, and
+# retry share this budget). Also the YAML fix-loop default.
 DEFAULT_MAX_FIX_LOOPS = int(os.environ.get("TANK_DEFAULT_MAX_FIX_LOOPS", "3"))
+
+# Mission circuit breakers. Blank Mad Scientist form fields use these.
+# Token cap is enforced only after a provider reports a token count.
+DEFAULT_SPEND_CAP_USD = float(os.environ.get("TANK_DEFAULT_SPEND_CAP_USD", "5"))
+DEFAULT_TOKEN_CAP = int(os.environ.get("TANK_DEFAULT_TOKEN_CAP", "500000"))
 
 # Path/name of the Claude Code CLI binary. Override if it's not on PATH.
 CLAUDE_BIN = os.environ.get("TANK_CLAUDE_BIN", "claude")
@@ -92,7 +97,7 @@ HOST = os.environ.get("TANK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("TANK_PORT", "8742"))
 
 # Bump when UI or API behavior changes — shown in the dashboard footer.
-TANK_VERSION = "0.3.0"
+TANK_VERSION = "0.4.0"
 
 # How many lines of a run's log to show in the live output panel.
 LOG_TAIL_LINES = int(os.environ.get("TANK_LOG_TAIL_LINES", "200"))

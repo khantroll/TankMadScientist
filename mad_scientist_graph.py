@@ -6,16 +6,20 @@ mad_scientist_* tables.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 
 import config
 import models
+import run_approval
 import run_chain
 
 INFLIGHT_STEP_STATUSES = {"queued", "running", "awaiting_approval"}
 TERMINAL_RUN_STATUSES = {"done", "failed", "rejected", "cancelled"}
 EVALUATOR_ROLES = {"reviewer", "tester"}
+VERIFIER_ROLES = EVALUATOR_ROLES
+BLOCKED_HUMAN = "BLOCKED_HUMAN"
 _RUN_TO_STEP = {
     "pending": "queued",
     "running": "running",
@@ -76,10 +80,22 @@ def open_graph(
     scout_provider: str | None,
     spend_cap_usd: float | None = None,
     max_parallel_steps: int | None = None,
+    max_attempts: int | None = None,
+    token_cap: int | None = None,
 ) -> tuple[int, int]:
     """Create the graph mission and its scout step. Returns (graph_id, scout_step_id)."""
-    if spend_cap_usd is not None and spend_cap_usd < 0:
+    if spend_cap_usd is None:
+        spend_cap_usd = config.DEFAULT_SPEND_CAP_USD
+    if spend_cap_usd < 0:
         raise ValueError("Spend cap cannot be negative")
+    if token_cap is None:
+        token_cap = config.DEFAULT_TOKEN_CAP
+    if token_cap < 0:
+        raise ValueError("Token cap cannot be negative")
+    if max_attempts is None:
+        max_attempts = config.DEFAULT_MAX_FIX_LOOPS
+    if max_attempts < 1:
+        raise ValueError("Max attempts per step must be at least 1")
     if max_parallel_steps is not None and max_parallel_steps < 1:
         raise ValueError("Max parallel steps must be at least 1")
     now = _now()
@@ -88,10 +104,21 @@ def open_graph(
             """
             INSERT INTO mad_scientist_missions
                 (mission_id, workspace_id, status, goal, spend_cap_usd, spend_usd,
-                 max_parallel_steps, created_at, updated_at)
-            VALUES (?, ?, 'running', ?, ?, 0, ?, ?, ?)
+                 max_parallel_steps, token_cap, tokens_used, max_attempts,
+                 created_at, updated_at)
+            VALUES (?, ?, 'running', ?, ?, 0, ?, ?, 0, ?, ?, ?)
             """,
-            (mission_id, workspace_id, goal, spend_cap_usd, max_parallel_steps, now, now),
+            (
+                mission_id,
+                workspace_id,
+                goal,
+                spend_cap_usd,
+                max_parallel_steps,
+                token_cap,
+                max_attempts,
+                now,
+                now,
+            ),
         )
         graph_id = cur.lastrowid
         cur = conn.execute(
@@ -137,8 +164,34 @@ def record_attempt(step_id: int, run_id: int, kind: str, status: str = "pending"
         return cur.lastrowid
 
 
+def assert_acyclic(steps: list[dict]) -> None:
+    """Reject a plan whose dependency edges contain a cycle.
+
+    Missing dependency names are not edges. A cycle among named steps
+    fails closed before those rows are inserted.
+    """
+    deps = {step["name"]: list(step.get("depends_on") or []) for step in steps}
+    visiting = set()
+    visited = set()
+
+    def visit(name: str) -> None:
+        if name in visited or name not in deps:
+            return
+        if name in visiting:
+            raise ValueError(f"Cyclic dependency involving '{name}'")
+        visiting.add(name)
+        for dep in deps.get(name, []):
+            visit(dep)
+        visiting.remove(name)
+        visited.add(name)
+
+    for step_name in deps:
+        visit(step_name)
+
+
 def materialize_plan(graph_mission_id: int, plan: dict) -> None:
     """Insert planned steps and dependency edges. Safe to call again."""
+    assert_acyclic(plan.get("steps") or [])
     existing = list_steps(graph_mission_id)
     if any(step["position"] > 0 for step in existing):
         return
@@ -271,6 +324,29 @@ def ready_steps(graph_mission_id: int) -> list:
     return ready
 
 
+def list_attempts(step_id: int):
+    with models.get_db() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM mad_scientist_attempts
+            WHERE step_id = ?
+            ORDER BY id
+            """,
+            (step_id,),
+        ).fetchall()
+
+
+def count_attempts(step_id: int) -> int:
+    return len(list_attempts(step_id))
+
+
+def attempt_cap(graph_row) -> int:
+    raw = None if graph_row is None else graph_row["max_attempts"]
+    if raw is None:
+        raw = config.DEFAULT_MAX_FIX_LOOPS
+    return int(raw)
+
+
 def count_inflight(graph_mission_id: int) -> int:
     with models.get_db() as conn:
         row = conn.execute(
@@ -373,6 +449,12 @@ def sync_run_status(run_id: int) -> None:
         )
         if latest is None or latest["id"] != attempt["id"]:
             return
+        step = conn.execute(
+            "SELECT status FROM mad_scientist_steps WHERE id = ?",
+            (attempt["step_id"],),
+        ).fetchone()
+        if step is not None and step["status"] == BLOCKED_HUMAN:
+            return
         if status in _RUN_TO_STEP:
             step_status = _RUN_TO_STEP[status]
         elif status == "done" and attempt["attempt_kind"] == "fixer":
@@ -439,27 +521,236 @@ def spend_block_reason(graph_row) -> str | None:
     return f"Spend cap reached (${spent:.4f} of ${cap:.4f})"
 
 
-def set_status(mission_id: int, status: str, summary: str | None = None) -> None:
+def _tokens_were_reported(graph_mission_id: int) -> bool:
+    with models.get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 AS ok
+            FROM mad_scientist_attempts a
+            JOIN mad_scientist_steps s ON s.id = a.step_id
+            WHERE s.graph_mission_id = ? AND a.tokens IS NOT NULL
+            LIMIT 1
+            """,
+            (graph_mission_id,),
+        ).fetchone()
+    return row is not None
+
+
+def token_block_reason(graph_row) -> str | None:
+    """Stop only when a provider has reported tokens and the cap is crossed.
+
+    A missing token count is not zero. Providers that never report usage
+    leave tokens NULL, and this breaker stays idle.
+    """
+    if graph_row is None or graph_row["token_cap"] is None:
+        return None
+    if not _tokens_were_reported(graph_row["id"]):
+        return None
+    used = int(graph_row["tokens_used"] or 0)
+    cap = int(graph_row["token_cap"])
+    if used < cap:
+        return None
+    return f"Token cap reached ({used} of {cap})"
+
+
+def mission_stop_reason(graph_row) -> str | None:
+    if graph_row is None:
+        return None
+    return spend_block_reason(graph_row) or token_block_reason(graph_row)
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def record_attempt_usage(run_id: int) -> None:
+    """Store provider tokens and patch/error hashes once per attempt."""
+    attempt = get_attempt_by_run(run_id)
+    if attempt is None:
+        return
+    run = models.get_run(run_id)
+    if run is None or run["status"] not in TERMINAL_RUN_STATUSES:
+        return
+    payload = models.get_run_payload(run_id) or {}
+    raw_tokens = payload.get("total_tokens")
+    tokens = None
+    if isinstance(raw_tokens, int) and not isinstance(raw_tokens, bool) and raw_tokens >= 0:
+        tokens = raw_tokens
+    patch_hash = attempt["patch_hash"]
+    error_hash = attempt["error_hash"]
+    patches = payload.get("patches") or []
+    if patch_hash is None and isinstance(patches, list) and patches:
+        patch_hash = _sha256(json.dumps(patches, sort_keys=True, default=str))
+    if error_hash is None and run["status"] in ("failed", "rejected", "cancelled"):
+        text = (run["error"] or payload.get("summary") or run["status"] or "").strip()
+        if text:
+            error_hash = _sha256(text)
     now = _now()
     with models.get_db() as conn:
-        if summary is None:
+        conn.execute(
+            """
+            UPDATE mad_scientist_attempts
+            SET tokens = COALESCE(tokens, ?),
+                patch_hash = COALESCE(patch_hash, ?),
+                error_hash = COALESCE(error_hash, ?),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (tokens, patch_hash, error_hash, now, attempt["id"]),
+        )
+        if tokens and attempt["tokens"] is None:
             conn.execute(
                 """
                 UPDATE mad_scientist_missions
-                SET status = ?, updated_at = ?
-                WHERE mission_id = ?
+                SET tokens_used = tokens_used + ?, updated_at = ?
+                WHERE id = (
+                    SELECT graph_mission_id FROM mad_scientist_steps WHERE id = ?
+                )
                 """,
-                (status, now, mission_id),
+                (tokens, now, attempt["step_id"]),
             )
-        else:
+
+
+def repeated_mistake_reason(step_id: int, attempt_id: int) -> str | None:
+    with models.get_db() as conn:
+        current = conn.execute(
+            "SELECT patch_hash, error_hash FROM mad_scientist_attempts WHERE id = ?",
+            (attempt_id,),
+        ).fetchone()
+        if current is None:
+            return None
+        priors = conn.execute(
+            """
+            SELECT patch_hash, error_hash FROM mad_scientist_attempts
+            WHERE step_id = ? AND id != ?
+            """,
+            (step_id, attempt_id),
+        ).fetchall()
+    step = get_step(step_id)
+    name = step["name"] if step is not None else str(step_id)
+    if current["patch_hash"] and any(row["patch_hash"] == current["patch_hash"] for row in priors):
+        return (
+            f"Repeated patch hash on step '{name}'. "
+            "Retries halted so the same patch is not applied again."
+        )
+    if current["error_hash"] and any(row["error_hash"] == current["error_hash"] for row in priors):
+        return (
+            f"Repeated error hash on step '{name}'. "
+            "Retries halted so the same failure is not repeated."
+        )
+    return None
+
+
+def block_mission(mission_id: int, reason: str) -> None:
+    now = _now()
+    with models.get_db() as conn:
+        conn.execute(
+            """
+            UPDATE mad_scientist_missions
+            SET status = ?, blocked_reason = ?, updated_at = ?
+            WHERE mission_id = ?
+            """,
+            (BLOCKED_HUMAN, reason, now, mission_id),
+        )
+
+
+def block_step(step_id: int, reason: str) -> None:
+    now = _now()
+    with models.get_db() as conn:
+        conn.execute(
+            """
+            UPDATE mad_scientist_steps
+            SET status = ?, blocked_reason = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (BLOCKED_HUMAN, reason, now, step_id),
+        )
+
+
+def note_stop_reason(mission_id: int, reason: str, step_id: int | None = None) -> None:
+    """Store why automation stopped without changing a non-block status."""
+    now = _now()
+    with models.get_db() as conn:
+        conn.execute(
+            """
+            UPDATE mad_scientist_missions
+            SET blocked_reason = ?, updated_at = ?
+            WHERE mission_id = ?
+            """,
+            (reason, now, mission_id),
+        )
+        if step_id is not None:
             conn.execute(
                 """
-                UPDATE mad_scientist_missions
-                SET status = ?, summary = ?, updated_at = ?
-                WHERE mission_id = ?
+                UPDATE mad_scientist_steps
+                SET blocked_reason = ?, updated_at = ?
+                WHERE id = ?
                 """,
-                (status, summary, now, mission_id),
+                (reason, now, step_id),
             )
+
+
+def set_status(
+    mission_id: int,
+    status: str,
+    summary: str | None = None,
+    blocked_reason: str | None = None,
+) -> None:
+    now = _now()
+    assignments = ["status = ?", "updated_at = ?"]
+    values: list = [status, now]
+    if summary is not None:
+        assignments.append("summary = ?")
+        values.append(summary)
+    if blocked_reason is not None or status in ("running", "done"):
+        assignments.append("blocked_reason = ?")
+        values.append(blocked_reason)
+    values.append(mission_id)
+    with models.get_db() as conn:
+        conn.execute(
+            f"""
+            UPDATE mad_scientist_missions
+            SET {", ".join(assignments)}
+            WHERE mission_id = ?
+            """,
+            values,
+        )
+
+
+def payload_has_verification(payload: dict | None, role: str | None = None) -> bool:
+    """True when a tester or reviewer payload ran a real command that exited 0."""
+    if role not in VERIFIER_ROLES:
+        return True
+    if not payload:
+        return False
+    post = payload.get("post_actions") or {}
+    command = str(post.get("test_command") or "").strip()
+    has_test = bool(post.get("run_tests")) and bool(command)
+    has_diff = bool(post.get("run_git_diff"))
+    exit_code = payload.get("tool_exit_code")
+    return bool(has_test or has_diff) and exit_code == 0
+
+
+def verification_failure_reason(run, step) -> str | None:
+    """A model summary does not complete a tester or reviewer step.
+
+    Subprocess providers that store no local_agent payload are judged by
+    the process exit code already copied onto the run status. A payload
+    without a test, build, or diff command and a zero tool exit code fails.
+    """
+    if run is None or step is None or step["role"] not in VERIFIER_ROLES:
+        return None
+    if run["status"] != "done":
+        return None
+    payload = models.get_run_payload(run["id"])
+    if payload is None:
+        return None
+    if payload_has_verification(payload, step["role"]):
+        return None
+    return (
+        f"Step '{step['name']}' ({step['role']}) cannot complete on a model summary. "
+        "A real test, build, or diff command must run and exit 0."
+    )
 
 
 def record_evaluation_if_applicable(run_id: int) -> None:
@@ -484,10 +775,13 @@ def record_evaluation_if_applicable(run_id: int) -> None:
         return
     payload = models.get_run_payload(run_id) or {}
     critique = (payload.get("summary") or run["error"] or f"status {run['status']}").strip()
+    verified = run["status"] == "done" and payload_has_verification(payload, step["role"])
+    if run["status"] == "done" and not verified:
+        critique = verification_failure_reason(run, step) or critique
     subject = run["parent_run_id"] or newest_dependency_run_id(step["id"])
     models.insert_evaluation(
         graph_row["workspace_id"],
-        "pass" if run["status"] == "done" else "fail",
+        "pass" if verified else "fail",
         mission_id=graph_row["mission_id"],
         subject_run_id=subject,
         evaluator_run_id=run_id,
@@ -515,6 +809,38 @@ def step_public_dict(step) -> dict:
     }
 
 
+def _display_status(step, done_ids: set[int]) -> str:
+    status = step["status"]
+    if status == BLOCKED_HUMAN:
+        return "blocked"
+    if status == "planned":
+        if _unresolved(step):
+            return "planned"
+        deps = dependency_ids(step["id"])
+        if all(dep_id in done_ids for dep_id in deps):
+            return "ready"
+    return status
+
+
+def _attempt_public(attempt) -> dict:
+    run = models.get_run(attempt["run_id"])
+    approval = run_approval.approval_state(run) if run is not None else {
+        "run_id": attempt["run_id"],
+        "approval_available": False,
+        "response_type": None,
+        "patch_count": 0,
+    }
+    status = run["status"] if run is not None else attempt["status"]
+    return {
+        "id": attempt["id"],
+        "run_id": attempt["run_id"],
+        "attempt_kind": attempt["attempt_kind"],
+        "status": status,
+        "approval": approval,
+        "approval_available": bool(approval.get("approval_available")),
+    }
+
+
 def mission_view(mission_id: int) -> dict | None:
     graph_row = get_by_mission_id(mission_id)
     if graph_row is None:
@@ -523,32 +849,42 @@ def mission_view(mission_id: int) -> dict | None:
         row["step_id"]: row
         for row in models.list_evaluations_for_mission(mission_id)
     }
+    raw_steps = list_steps(graph_row["id"])
+    done_ids = {step["id"] for step in raw_steps if step["status"] == "done"}
     steps = []
     scout_failed = False
     non_scout_started = False
-    for step in list_steps(graph_row["id"]):
-        awaiting_run_id = None
-        if step["status"] == "awaiting_approval":
-            with models.get_db() as conn:
-                row = conn.execute(
-                    """
-                    SELECT run_id FROM mad_scientist_attempts
-                    WHERE step_id = ? AND status = 'awaiting_approval'
-                    ORDER BY id DESC LIMIT 1
-                    """,
-                    (step["id"],),
-                ).fetchone()
-            if row is not None:
-                awaiting_run_id = row["run_id"]
+    waiting_approvals = []
+    for step in raw_steps:
+        attempts = [_attempt_public(item) for item in list_attempts(step["id"])]
+        actionable = next((item for item in reversed(attempts) if item["approval_available"]), None)
+        awaiting = next(
+            (
+                item for item in reversed(attempts)
+                if item["status"] == "awaiting_approval"
+            ),
+            None,
+        )
         evaluation = evaluations.get(step["id"])
+        display_status = _display_status(step, done_ids)
+        if actionable is not None:
+            waiting_approvals.append(actionable)
         steps.append({
             "id": step["id"],
             "name": step["name"],
             "role": step["role"],
             "status": step["status"],
+            "display_status": display_status,
             "depends_on": dependency_names(step["id"]),
             "unresolved": _unresolved(step),
-            "awaiting_run_id": awaiting_run_id,
+            "blocked_reason": step["blocked_reason"],
+            "attempt_count": len(attempts),
+            "attempts": attempts,
+            "awaiting_run_id": actionable["run_id"] if actionable else None,
+            "approval_available": actionable is not None,
+            "approval_pending_without_payload": (
+                awaiting is not None and actionable is None
+            ),
             "evaluation": (
                 {"verdict": evaluation["verdict"], "critique": evaluation["critique"]}
                 if evaluation is not None else None
@@ -569,8 +905,14 @@ def mission_view(mission_id: int) -> dict | None:
     return {
         "status": graph_row["status"],
         "summary": graph_row["summary"],
+        "blocked_reason": graph_row["blocked_reason"],
         "spend_usd": graph_row["spend_usd"],
         "spend_cap_usd": graph_row["spend_cap_usd"],
+        "tokens_used": graph_row["tokens_used"],
+        "token_cap": graph_row["token_cap"],
+        "tokens_reported": _tokens_were_reported(graph_row["id"]),
+        "max_attempts": graph_row["max_attempts"],
+        "waiting_approvals": waiting_approvals,
         "steps": steps,
         "can_retry_scout": can_retry_scout,
     }

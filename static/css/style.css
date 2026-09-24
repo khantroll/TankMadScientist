@@ -474,6 +474,9 @@ textarea { font-family: var(--font-mono); min-height: 70px; resize: vertical; }
 .status-badge.status-queued { color: var(--text-muted); }
 .status-badge.status-fixer_succeeded { color: var(--amber); border-color: var(--amber); }
 .status-badge.status-aborted { color: var(--red); border-color: var(--red); }
+.status-badge.status-ready { color: var(--accent); border-color: var(--accent); }
+.status-badge.status-blocked,
+.status-badge.status-BLOCKED_HUMAN { color: var(--red); border-color: var(--red); }
 
 .mission-banner {
   font-size: 12px;
@@ -495,6 +498,18 @@ textarea { font-family: var(--font-mono); min-height: 70px; resize: vertical; }
   padding: 6px 0;
   border-top: 1px solid var(--border);
   font-size: 13px;
+}
+
+.graph-attempt-stack {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.graph-block-reason {
+  flex-basis: 100%;
+  color: var(--red);
+  font-size: 12px;
 }
 
 .mission-card {

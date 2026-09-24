@@ -89,19 +89,44 @@ def _usage_cost_usd(usage) -> float | None:
     return None
 
 
+def _usage_tokens(usage) -> int | None:
+    """Return a reported total, or None when the provider omitted usage."""
+    if not isinstance(usage, dict):
+        return None
+    total = usage.get("total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+        return total
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    if isinstance(prompt, int) or isinstance(completion, int):
+        prompt_n = prompt if isinstance(prompt, int) and not isinstance(prompt, bool) else 0
+        completion_n = (
+            completion if isinstance(completion, int) and not isinstance(completion, bool) else 0
+        )
+        return prompt_n + completion_n
+    return None
+
+
 def _add_cost(total: float, cost: float | None) -> float:
     if cost is None or cost <= 0:
         return total
     return total + cost
 
 
-def _attach_cost(payload: dict, cost: float) -> dict:
+def _attach_usage(payload: dict, cost: float, tokens: int | None = None) -> dict:
     if cost > 0:
         payload["cost_usd"] = round(cost, 6)
+    if tokens is not None:
+        payload["total_tokens"] = int(tokens)
     return payload
 
 
-def _call_chat_model(cfg: dict, system_prompt: str, user_message: str, json_mode: bool | None = None) -> tuple[str, float | None]:
+def _call_chat_model(
+    cfg: dict,
+    system_prompt: str,
+    user_message: str,
+    json_mode: bool | None = None,
+) -> tuple[str, float | None, int | None]:
     base_url = cfg.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/")
     model = cfg.get("model")
     if not model:
@@ -136,7 +161,12 @@ def _call_chat_model(cfg: dict, system_prompt: str, user_message: str, json_mode
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise ValueError(_http_error_message(exc, cfg)) from exc
-    return payload["choices"][0]["message"]["content"], _usage_cost_usd(payload.get("usage"))
+    usage = payload.get("usage")
+    return (
+        payload["choices"][0]["message"]["content"],
+        _usage_cost_usd(usage),
+        _usage_tokens(usage),
+    )
 
 
 def _extract_json(text: str) -> dict:
@@ -170,7 +200,36 @@ def _default_post_actions() -> dict:
     }
 
 
-def _coerce_agent_response(raw: str, log_path: str, strict: bool = False) -> dict:
+def _is_tester_context(stage_name: str | None = None, role: dict | None = None) -> bool:
+    labels = [stage_name or ""]
+    if role:
+        labels.extend(str(role.get(key) or "") for key in ("slug", "name", "role", "goal"))
+    combined = " ".join(labels).lower()
+    return any(token in combined for token in ("tester", "test", "validator", "validation"))
+
+
+def _is_reviewer_context(stage_name: str | None = None, role: dict | None = None) -> bool:
+    labels = [stage_name or ""]
+    if role:
+        labels.extend(str(role.get(key) or "") for key in ("slug", "name", "role"))
+    return "reviewer" in " ".join(labels).lower()
+
+
+def verification_mode(stage_name: str | None = None, role: dict | None = None) -> str | None:
+    """Tester rules win when a label matches both tester and reviewer."""
+    if _is_tester_context(stage_name, role):
+        return "tester"
+    if _is_reviewer_context(stage_name, role):
+        return "reviewer"
+    return None
+
+
+def _coerce_agent_response(
+    raw: str,
+    log_path: str,
+    strict: bool = False,
+    verification: str | None = None,
+) -> dict:
     """Parse strict JSON from the model, or fall back to a plain-text plan.
 
     strict=True (used for mission stages) disables the plain-text
@@ -181,7 +240,7 @@ def _coerce_agent_response(raw: str, log_path: str, strict: bool = False) -> dic
     real failure.
     """
     try:
-        return _validate_payload(_extract_json(raw))
+        return _validate_payload(_extract_json(raw), verification=verification)
     except ValueError as exc:
         _log(log_path, f"[tank] JSON parse failed: {exc}\n")
         _log(log_path, f"--- raw model response ---\n{raw}\n--- end ---\n")
@@ -196,30 +255,66 @@ def _coerce_agent_response(raw: str, log_path: str, strict: bool = False) -> dic
         }
 
 
-def _validate_payload(payload: dict) -> dict:
+def _post_actions_view(post_actions: dict) -> dict:
+    return {
+        "run_tests": bool(post_actions.get("run_tests")),
+        "test_command": (post_actions.get("test_command") or "").strip(),
+        "run_git_diff": bool(post_actions.get("run_git_diff")),
+    }
+
+
+def _validate_payload(payload: dict, verification: str | None = None) -> dict:
     response_type = payload.get("response_type")
-    if response_type not in {"plan", "patch"}:
-        raise ValueError("response_type must be 'plan' or 'patch'")
+    allowed_types = {"plan", "patch", "result"} if verification else {"plan", "patch"}
+    if response_type not in allowed_types:
+        allowed = "', '".join(sorted(allowed_types))
+        raise ValueError(f"response_type must be one of '{allowed}'")
 
     patches = payload.get("patches") or []
     if response_type == "patch" and not patches:
         raise ValueError("patch response must include at least one patch")
 
+    post_actions = payload.get("post_actions") or {}
+    actions = _post_actions_view(post_actions)
+    summary = (payload.get("summary") or "").strip()
+    has_test = actions["run_tests"] and bool(actions["test_command"])
+    has_diff = actions["run_git_diff"]
+    if verification and response_type in {"plan", "result"} and not patches:
+        if verification == "tester":
+            if not actions["run_tests"]:
+                raise ValueError("tester response rejected: missing post_actions.run_tests=true")
+            if not actions["test_command"]:
+                raise ValueError("tester response rejected: missing post_actions.test_command")
+        elif not (has_test or has_diff):
+            raise ValueError(
+                "reviewer response rejected: a test, build, or diff command is required"
+            )
+        if actions["run_tests"] and not actions["test_command"]:
+            raise ValueError(
+                f"{verification} response rejected: missing post_actions.test_command"
+            )
+        if not summary:
+            raise ValueError(
+                f"{verification} response rejected: summary must explain what will be validated"
+            )
+        return {
+            "response_type": "plan",
+            "summary": summary,
+            "plan": payload.get("plan", ""),
+            "patches": [],
+            "post_actions": actions,
+        }
+
     plan = (payload.get("plan") or "").strip()
     if response_type == "plan" and output_quality.looks_like_meta_plan(plan):
         raise ValueError("plan field is a procedure checklist, not a deliverable")
 
-    post_actions = payload.get("post_actions") or {}
     return {
         "response_type": response_type,
         "summary": payload.get("summary", ""),
         "plan": payload.get("plan", ""),
         "patches": patches,
-        "post_actions": {
-            "run_tests": bool(post_actions.get("run_tests")),
-            "test_command": (post_actions.get("test_command") or "").strip(),
-            "run_git_diff": bool(post_actions.get("run_git_diff")),
-        },
+        "post_actions": actions,
     }
 
 
@@ -428,18 +523,25 @@ def _prepare_analysis_run(
 
     _log(ctx.log_path, "[tank] analysis mode: markdown report\n")
     cost = 0.0
-    raw, call_cost = _call_chat_model(cfg, system_prompt, user_message, json_mode=False)
+    tokens = None
+    raw, call_cost, call_tokens = _call_chat_model(
+        cfg, system_prompt, user_message, json_mode=False
+    )
     cost = _add_cost(cost, call_cost)
+    if call_tokens is not None:
+        tokens = (tokens or 0) + call_tokens
 
     if output_quality.looks_like_meta_plan(raw):
         _log(ctx.log_path, "[tank] meta-plan detected — retrying with stricter instructions\n")
-        raw, call_cost = _call_chat_model(
+        raw, call_cost, call_tokens = _call_chat_model(
             cfg,
             system_prompt,
             user_message + "\n\n" + output_quality.RETRY_NUDGE,
             json_mode=False,
         )
         cost = _add_cost(cost, call_cost)
+        if call_tokens is not None:
+            tokens = (tokens or 0) + call_tokens
 
     if output_quality.looks_like_meta_plan(raw):
         _log(ctx.log_path, "[tank] warning: response may still be low quality\n")
@@ -454,7 +556,7 @@ def _prepare_analysis_run(
     }
     _log(ctx.log_path, f"\n=== Summary ===\n{payload['summary']}\n")
     _log(ctx.log_path, f"\n=== Report ===\n{payload['plan']}\n")
-    return _attach_cost(payload, cost)
+    return _attach_usage(payload, cost, tokens)
 
 
 def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
@@ -499,11 +601,17 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
         project_profile=profile,
         workspace_test_command=ctx.workspace.get("test_command"),
     )
-    raw, cost = _call_chat_model(cfg, system_prompt, user_message)
+    raw, cost, tokens = _call_chat_model(cfg, system_prompt, user_message)
     _log(ctx.log_path, "[tank] model response received\n")
+    mode = verification_mode(ctx.stage_name, getattr(ctx, "role", None))
 
     try:
-        payload = _coerce_agent_response(raw, ctx.log_path, strict=ctx.mission_id is not None)
+        payload = _coerce_agent_response(
+            raw,
+            ctx.log_path,
+            strict=ctx.mission_id is not None,
+            verification=mode,
+        )
     except ValueError:
         if ctx.mission_id is not None:
             _log(ctx.log_path, "[tank] invalid/rejected model response in mission stage — failing run\n")
@@ -551,7 +659,7 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
     if requested:
         _log(ctx.log_path, f"\n[tank] model requested post-apply: {', '.join(requested)}\n")
 
-    return _attach_cost(payload, cost or 0.0)
+    return _attach_usage(payload, cost or 0.0, tokens)
 
 
 def log_run_outcome(log_path: str, exit_code: int) -> None:

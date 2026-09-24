@@ -31,17 +31,27 @@
       {% set g = entry.graph %}
       <div class="mission-banner">
         Graph {{ g.status }}
+        {% if g.summary %}· plan: {{ g.summary }}{% endif %}
         {% if g.spend_cap_usd is not none %}
           · spend ${{ '%.4f'|format(g.spend_usd or 0) }} / ${{ '%.4f'|format(g.spend_cap_usd) }}
         {% elif g.spend_usd %}
           · spend ${{ '%.4f'|format(g.spend_usd) }}
         {% endif %}
-        {% if g.summary %}· {{ g.summary }}{% endif %}
+        {% if g.token_cap is not none %}
+          · tokens {{ g.tokens_used or 0 }} / {{ g.token_cap }}
+          {% if not g.tokens_reported %}(no usage reported yet){% endif %}
+        {% endif %}
+        {% if g.waiting_approvals %}
+          · {{ g.waiting_approvals|length }} approval{{ 's' if g.waiting_approvals|length != 1 else '' }} waiting
+        {% endif %}
       </div>
+      {% if g.blocked_reason %}
+        <div class="graph-block-reason">Blocked: {{ g.blocked_reason }}</div>
+      {% endif %}
       <ul class="graph-steps">
         {% for step in g.steps %}
         <li class="graph-step">
-          <span class="status-badge status-{{ step.status }}">{{ step.status }}</span>
+          <span class="status-badge status-{{ step.display_status }}">{{ step.display_status }}</span>
           <span>{{ step.name }}</span>
           <span class="mono">{{ step.role }}</span>
           {% if step.depends_on %}
@@ -53,13 +63,29 @@
           {% if step.evaluation %}
             <span class="mono">evaluation {{ step.evaluation.verdict }}</span>
           {% endif %}
-          {% if step.awaiting_run_id %}
-            <button class="btn btn-sm"
-                    hx-post="{{ url_for('approve_run_patch', run_id=step.awaiting_run_id) }}"
-                    hx-swap="none">Approve #{{ step.awaiting_run_id }}</button>
-            <button class="btn btn-sm btn-cancel"
-                    hx-post="{{ url_for('reject_run_patch', run_id=step.awaiting_run_id) }}"
-                    hx-swap="none">Reject</button>
+          <span class="mono">{{ step.attempt_count }} attempt{{ 's' if step.attempt_count != 1 else '' }}</span>
+          {% if step.approval_available %}
+            {% for attempt in step.attempts if attempt.approval_available %}
+              {% with approval=attempt.approval %}
+                {% include "partials/approval_controls.html" %}
+              {% endwith %}
+            {% endfor %}
+          {% elif step.approval_pending_without_payload %}
+            <span class="graph-block-reason">Approval is waiting, but this run has no plan or patch payload.</span>
+          {% endif %}
+          {% if step.blocked_reason %}
+            <div class="graph-block-reason">{{ step.blocked_reason }}</div>
+          {% endif %}
+          {% if step.attempts %}
+            <div class="graph-attempt-stack">
+              {% for attempt in step.attempts %}
+                <span>
+                  {{ attempt.attempt_kind }}
+                  / {{ attempt.status }}
+                  <a href="{{ url_for('run_output', run_id=attempt.run_id) }}">#{{ attempt.run_id }}</a>{% if not loop.last %};{% endif %}
+                </span>
+              {% endfor %}
+            </div>
           {% endif %}
         </li>
         {% endfor %}

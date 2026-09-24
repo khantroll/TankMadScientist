@@ -244,10 +244,23 @@ def approve_run(run_id):
     response_type = payload.get("response_type")
 
     # Plan-type responses require no file changes — acknowledgement just marks done.
+    # Tester and reviewer plans still need a real command exit code.
     if response_type == "plan":
         if run["log_path"]:
             local_agent._log(run["log_path"], "\n[tank] plan acknowledged by user\n")
-        models.update_run(run_id, status="done", finished_at=_now())
+        import mad_scientist_graph as graph
+
+        attempt = graph.get_attempt_by_run(run_id)
+        step = graph.get_step(attempt["step_id"]) if attempt is not None else None
+        role = step["role"] if step is not None else None
+        if role in graph.VERIFIER_ROLES and not graph.payload_has_verification(payload, role):
+            reason = (
+                f"Step '{step['name']}' ({role}) cannot complete on a model summary. "
+                "A real test, build, or diff command must run and exit 0."
+            )
+            models.update_run(run_id, status="failed", error=reason, finished_at=_now())
+        else:
+            models.update_run(run_id, status="done", finished_at=_now())
         mission.advance_mission(run_id)
         return True
 
@@ -283,10 +296,30 @@ def approve_run(run_id):
             workspace["repo_path"], payload, run["log_path"],
             workspace=dict(workspace), authorized_tools=authorized,
         )
+        payload["tool_exit_code"] = code
+        import mad_scientist_graph as graph
+
+        attempt = graph.get_attempt_by_run(run_id)
+        step = graph.get_step(attempt["step_id"]) if attempt is not None else None
+        role = step["role"] if step is not None else None
+        verified = graph.payload_has_verification(payload, role)
+        if role in graph.VERIFIER_ROLES and not verified:
+            status = "failed"
+            error = (
+                f"Step '{step['name']}' ({role}) cannot complete on a model summary. "
+                "A real test, build, or diff command must run and exit 0."
+            )
+            if code != 0:
+                error = f"Verification command exited {code}"
+        else:
+            status = "done" if code == 0 else "failed"
+            error = None if code == 0 else f"Verification command exited {code}"
         models.update_run(
             run_id,
-            status="done" if code == 0 else "failed",
+            status=status,
+            error=error,
             finished_at=_now(),
+            agent_payload=json.dumps(payload),
         )
     except Exception as exc:
         local_agent._log(run["log_path"], f"[tank] apply failed: {exc}\n")

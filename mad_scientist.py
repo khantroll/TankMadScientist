@@ -130,6 +130,7 @@ def _validate_plan(raw_plan: dict, default_provider: str, max_steps: int | None)
 
     if not normalized["steps"]:
         raise ValueError("Execution plan did not contain any usable steps")
+    graph.assert_acyclic(normalized["steps"])
     return normalized
 
 
@@ -258,8 +259,11 @@ def _step_task(goal: str, step: dict, previous_names: list[str]) -> str:
     )
 
     verify_contract = (
-        "Verify the actual files changed by prior steps. Name the files and the "
-        "behaviour you checked. If tests are appropriate, request them in post_actions."
+        "Verify the actual files changed by prior steps with a real command. "
+        "Set post_actions.run_tests true and post_actions.test_command to a test "
+        "or build command, or set post_actions.run_git_diff true. Tank completes "
+        "this step only when that command's exit code is 0. A summary that says "
+        "the checks passed does not count."
         if role in {"tester", "reviewer"}
         else ""
     )
@@ -448,6 +452,7 @@ def start_mission(
     max_fix_loops: int | None = None,
     spend_cap_usd: float | None = None,
     max_parallel_steps: int | None = None,
+    token_cap: int | None = None,
 ) -> int:
     workspace = models.get_workspace_by_id(workspace_id)
     if workspace is None:
@@ -497,11 +502,25 @@ def start_mission(
         provider,
         spend_cap_usd=spend_cap_usd,
         max_parallel_steps=max_parallel_steps,
+        max_attempts=max_fix_loops,
+        token_cap=token_cap,
     )
+    stored = graph.get_by_mission_id(mission_id)
     _append_parent_log(mission, f"[tank] mad_scientist mission started: m#{mission_id} graph=#{graph_id}")
     _append_parent_log(mission, f"[tank] goal: {goal}")
-    if spend_cap_usd is not None:
-        _append_parent_log(mission, f"[tank] spend cap: ${spend_cap_usd:.4f}")
+    if stored is not None and stored["spend_cap_usd"] is not None:
+        _append_parent_log(mission, f"[tank] spend cap: ${float(stored['spend_cap_usd']):.4f}")
+    if stored is not None and stored["token_cap"] is not None:
+        _append_parent_log(
+            mission,
+            f"[tank] token cap: {int(stored['token_cap'])} "
+            "(enforced when a provider reports tokens)",
+        )
+    if stored is not None:
+        _append_parent_log(
+            mission,
+            f"[tank] attempts per step: {stored['max_attempts']}",
+        )
 
     scout_run_id = models.create_run(
         workspace_id,
@@ -767,12 +786,31 @@ def _revive_swept_parent(mission) -> None:
     models.update_run(parent_id, status="running", error=None, finished_at=None)
 
 
-def _fail_graph_mission(mission, plan: dict, run, note: str) -> None:
+def _fail_graph_mission(mission, plan: dict, run, note: str, step_id: int | None = None) -> None:
     models.update_mission(mission["id"], status="failed", note=note)
-    graph.set_status(mission["id"], "failed")
+    graph.set_status(mission["id"], "failed", blocked_reason=note)
+    if step_id is not None:
+        graph.note_stop_reason(mission["id"], note, step_id=step_id)
     _append_parent_log(mission, f"[tank] {note}")
     if mission["parent_run_id"]:
         models.update_run(mission["parent_run_id"], status="failed", finished_at=_now(), error=note)
+    _store_memory(mission["workspace_id"], mission, plan, run)
+
+
+def _block_graph_mission(mission, plan: dict, run, reason: str, step_id: int | None = None) -> None:
+    """Stop the mission for a person. The graph status is BLOCKED_HUMAN."""
+    models.update_mission(mission["id"], status=graph.BLOCKED_HUMAN, note=reason)
+    graph.block_mission(mission["id"], reason)
+    if step_id is not None:
+        graph.block_step(step_id, reason)
+    _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+    if mission["parent_run_id"]:
+        models.update_run(
+            mission["parent_run_id"],
+            status="failed",
+            finished_at=_now(),
+            error=reason,
+        )
     _store_memory(mission["workspace_id"], mission, plan, run)
 
 
@@ -877,18 +915,20 @@ def _graph_plan(mission) -> dict:
 def _continue_graph(workspace, mission, graph_row, plan: dict, run, fallback_run_id: int | None) -> bool:
     """Queue newly ready steps, or finish the mission when the DAG is idle."""
     _revive_swept_parent(mission)
+    graph_row = graph.get_by_mission_id(mission["id"]) or graph_row
     if graph.all_steps_done(graph_row["id"]) and graph.count_inflight(graph_row["id"]) == 0:
         _complete_graph_mission(mission, plan, run)
         return True
 
-    reason = graph.spend_block_reason(graph.get_by_mission_id(mission["id"]))
+    reason = graph.mission_stop_reason(graph_row)
     if reason:
-        _fail_graph_mission(mission, plan, run, reason)
+        _block_graph_mission(mission, plan, run, reason)
         return True
 
     queued = _schedule_ready_graph_steps(
         workspace, mission, graph.get_by_mission_id(mission["id"]), fallback_run_id
     )
+    graph_row = graph.get_by_mission_id(mission["id"])
     if graph.all_steps_done(graph_row["id"]) and graph.count_inflight(graph_row["id"]) == 0:
         _complete_graph_mission(mission, plan, run)
         return True
@@ -906,6 +946,14 @@ def _continue_graph(workspace, mission, graph_row, plan: dict, run, fallback_run
             note=f"Waiting on {waiting} active DAG step(s)",
         )
     else:
+        blocked = [
+            step for step in graph.list_steps(graph_row["id"])
+            if step["status"] == graph.BLOCKED_HUMAN
+        ]
+        if blocked:
+            reason = blocked[-1]["blocked_reason"] or "A step is BLOCKED_HUMAN."
+            _block_graph_mission(mission, plan, run, reason)
+            return True
         note = "Generated DAG is blocked; remaining steps have unsatisfied dependencies."
         _fail_graph_mission(mission, plan, run, note)
         return True
@@ -915,12 +963,70 @@ def _continue_graph(workspace, mission, graph_row, plan: dict, run, fallback_run
     return True
 
 
+def _downgrade_unverified_success(run):
+    """A tester or reviewer 'passed' summary is a failed attempt."""
+    if run is None or run["status"] != "done":
+        return run
+    attempt = graph.get_attempt_by_run(run["id"])
+    step_row = graph.get_step(attempt["step_id"]) if attempt is not None else None
+    reason = graph.verification_failure_reason(run, step_row)
+    if not reason:
+        return run
+    models.update_run(run["id"], status="failed", error=reason)
+    graph.sync_run_status(run["id"])
+    return models.get_run(run["id"])
+
+
+def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_run_id) -> bool:
+    """Apply breakers before queueing another attempt on this step.
+
+    Returns True when the caller must not queue that attempt.
+    """
+    graph_row = graph.get_by_mission_id(mission["id"])
+    reason = graph.mission_stop_reason(graph_row)
+    if reason:
+        _block_graph_mission(mission, plan, run, reason)
+        return True
+    attempt = graph.get_attempt_by_run(run["id"])
+    if attempt is not None:
+        reason = graph.repeated_mistake_reason(step_row["id"], attempt["id"])
+        if reason:
+            graph.block_step(step_row["id"], reason)
+            models.update_mission(mission["id"], note=reason)
+            _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+            _continue_graph(workspace, mission, graph_row, plan, run, fallback_run_id)
+            return True
+    cap = graph.attempt_cap(graph_row)
+    count = graph.count_attempts(step_row["id"])
+    if count >= cap:
+        reason = (
+            f"Attempt cap reached on step '{step_row['name']}' ({count} of {cap})."
+        )
+        graph.block_step(step_row["id"], reason)
+        models.update_mission(mission["id"], note=reason)
+        _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+        _continue_graph(workspace, mission, graph_row, plan, run, fallback_run_id)
+        return True
+    return False
+
+
 def _advance_graph_locked(run, mission) -> bool:
     graph.sync_run_status(run["id"])
+    run = _downgrade_unverified_success(run)
     graph.charge_run_spend(run["id"])
     if run["status"] in ("done", "failed", "rejected", "cancelled"):
+        graph.record_attempt_usage(run["id"])
         graph.record_evaluation_if_applicable(run["id"])
     if run["status"] not in ("done", "failed", "rejected", "cancelled"):
+        return True
+    if mission["status"] == graph.BLOCKED_HUMAN:
+        graph_row = graph.get_by_mission_id(mission["id"])
+        if (
+            graph_row is not None
+            and graph.all_steps_done(graph_row["id"])
+            and graph.count_inflight(graph_row["id"]) == 0
+        ):
+            _complete_graph_mission(mission, _graph_plan(mission), run)
         return True
     if mission["status"] != "running":
         return True
@@ -943,33 +1049,21 @@ def _advance_graph_locked(run, mission) -> bool:
 
     if run["status"] in ("rejected", "cancelled"):
         note = f"Step '{step_row['name']}' ended with status {run['status']}."
-        _fail_graph_mission(mission, plan, run, note)
+        _fail_graph_mission(mission, plan, run, note, step_id=step_row["id"])
         return True
 
     if run["status"] == "failed":
-        if kind in ("fixer", "scout") or step_row["name"] == SCOUT_STAGE:
+        if kind == "scout" or step_row["name"] == SCOUT_STAGE:
             note = f"Step '{step_row['name']}' ended with status failed."
-            if kind == "fixer":
-                note = f"Fixer for '{step_row['name']}' failed - mission stopped."
-            _fail_graph_mission(mission, plan, run, note)
+            _fail_graph_mission(mission, plan, run, note, step_id=step_row["id"])
             return True
 
-        max_loops = mission["max_fix_loops"]
-        if max_loops is None:
-            max_loops = config.DEFAULT_MAX_FIX_LOOPS
-        if mission["fix_loop_count"] >= max_loops:
-            note = (
-                f"Fix-loop limit reached ({max_loops}) after step "
-                f"'{step_row['name']}' failed."
-            )
-            _fail_graph_mission(mission, plan, run, note)
+        if _halt_before_next_attempt(
+            workspace, mission, plan, run, step_row, run["id"]
+        ):
             return True
 
-        reason = graph.spend_block_reason(graph.get_by_mission_id(mission["id"]))
-        if reason:
-            _fail_graph_mission(mission, plan, run, reason)
-            return True
-
+        max_loops = graph.attempt_cap(graph.get_by_mission_id(mission["id"]))
         attempt_n = mission["fix_loop_count"] + 1
         fixer = _fixer_step(graph.step_public_dict(step_row), run, attempt_n, max_loops)
         child_id = _create_step_attempt(
@@ -1013,11 +1107,12 @@ def _advance_graph_locked(run, mission) -> bool:
                 if "steps" not in parsed and isinstance(parsed.get("plan"), str):
                     parsed = _extract_json(parsed["plan"])
                 plan = _validate_plan(parsed, mission["provider"], mission["max_steps"])
+                graph.materialize_plan(graph_row["id"], plan)
             except ValueError as exc:
                 raw = _scout_output(run)
                 note = f"Scout output could not be parsed: {exc}"
                 models.update_mission(mission["id"], status="failed", note=note)
-                graph.set_status(mission["id"], "failed")
+                graph.set_status(mission["id"], "failed", blocked_reason=note)
                 _append_parent_log(mission, f"[tank] {note}")
                 _append_parent_log(mission, "--- raw scout output ---")
                 _append_parent_log(mission, raw[:12000])
@@ -1027,7 +1122,6 @@ def _advance_graph_locked(run, mission) -> bool:
                         mission["parent_run_id"], status="failed", finished_at=_now()
                     )
                 return True
-            graph.materialize_plan(graph_row["id"], plan)
             models.update_mission(
                 mission["id"],
                 plan_json=json.dumps(plan, indent=2, sort_keys=True),
@@ -1049,9 +1143,9 @@ def _advance_graph_locked(run, mission) -> bool:
         return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
 
     if kind == "fixer":
-        reason = graph.spend_block_reason(graph.get_by_mission_id(mission["id"]))
-        if reason:
-            _fail_graph_mission(mission, plan, run, reason)
+        if _halt_before_next_attempt(
+            workspace, mission, plan, run, step_row, run["id"]
+        ):
             return True
         child_id = _create_step_attempt(
             workspace, mission, step_row, run["id"], "retry"

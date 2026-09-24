@@ -223,9 +223,9 @@ parent run, queues a first `Scout / Repo Cartographer` attempt, then
 parses the scout's structured JSON execution plan into durable graph
 rows owned by `mad_scientist_graph.py`:
 
-- `mad_scientist_missions` stores the graph mission, including an optional
-  `spend_cap_usd` and the spend accumulated from provider-reported
-  `cost_usd`
+- `mad_scientist_missions` stores the graph mission, including
+  `spend_cap_usd` (default $5), `token_cap` (default 500000),
+  `max_attempts` (default 3), and `blocked_reason` when automation stops
 - `mad_scientist_steps` stores logical planned steps and their status
 - `mad_scientist_step_dependencies` stores DAG edges
 - `mad_scientist_attempts` maps normal Tank runs to attempts against a
@@ -250,10 +250,12 @@ reject controls for that run are on the graph row.
 
 If a generated step fails, Tank creates a bounded fixer attempt on the
 **same** logical step, then a retry attempt on that step after the fixer
-succeeds. The cap comes from the form's Fix loops field, falling back to
-`TANK_DEFAULT_MAX_FIX_LOOPS`. A spend cap stops further scheduling once
-recorded cost reaches it. Providers that do not report usage cost do not
-increment spend.
+succeeds. The cap is per step (`max_attempts`, form field "Attempts per
+step", default `TANK_DEFAULT_MAX_FIX_LOOPS`). Crossing that cap, the spend
+cap, the token cap, or seeing the same patch or error hash twice sets the
+step and, when nothing else can run, the mission to `BLOCKED_HUMAN` with
+a stored reason. Providers that do not report usage cost do not increment
+spend. Providers that do not report token counts do not trip the token cap.
 
 Mad Scientist runs also update local `workspace_memory` in SQLite with
 project profile facts, important paths, changed paths, successful step
@@ -266,8 +268,10 @@ left in place. That sweep does not auto-resume the interrupted run.
 
 Run `python scripts/validate_mad_scientist_graph.py` for a lightweight
 SQLite-only validation of graph storage, dependency scheduling, localized
-dependency context, fixer/retry attempts, spend cap, approval sync,
-restart sweep, and workspace ownership checks.
+dependency context, fixer/retry attempts, circuit breakers, approval
+controls, restart sweep, and workspace ownership checks. Run
+`python scripts/validate_tester_stage_validation.py` to check that tester
+and reviewer success requires a real command exit code.
 
 ## Production deployment
 
