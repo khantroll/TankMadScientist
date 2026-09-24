@@ -6,12 +6,13 @@ Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQL
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T21:01:00Z
+- **Updated:** 2026-09-24T21:01:30Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `618ac2b86881d94db43cfd63d52dd6b848454918` — recovered baseline (`RECOVERY_NOTES.md`)
 - **Open PRs (verified):**
   - PR #1 — Recover local Tank graph orchestration and repository scouting (`local-recovered`) — earlier recovery snapshot; draft; do not merge
   - PR #2 — Reconstruct the Mad Scientist graph on the existing Tank schema (`cursor/tank-graph-recovery-c38e`) — preferred current graph-reconstruction line; draft; PR body reports the graph validator passing (reported by that PR, not re-run here); auth and bounded repository discovery still later; do not merge
+  - PR #3 — Add .agent STATUS handoff protocol (`cursor/agent-handoff-protocol-aece`) — this docs-only draft
 - **Scope:** This PR only bootstraps `.agent/` continuity files. No application feature work.
 - **Next action:** Wait for Jeffrey's additional Tank documentation before starting implementation. Do not merge PR #1 or #2 automatically. Prefer continuing PR #2 over restarting graph work. Do not start a third overlapping recovery PR.
 
