@@ -6,10 +6,10 @@ Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQL
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T23:21:00Z
+- **Updated:** 2026-09-24T23:22:00Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `9f041ca3124f0f8e5c5f465eed19f042bce48a78` — squash-merge of PR #7 ("Fill contract gaps on the PR #2 graph"), merged 2026-09-24T23:09:12Z. If this checkpoint disagrees with GitHub, GitHub wins.
-- **Lineage on main:** handoff PR #3 (`b40190f`) and STATUS reconcile PR #4 (`d27e6e5`); contract PR #5 (`0ff9f657`); audit PR #6 (`bb2abef`); gap-fill PR #7 (`9f041ca`). Source of truth remains `docs/MISSION_CONTROL_LAB_CONTRACT.md`. `docs/PR2_CONTRACT_AUDIT.md` is the accepted gap list that #7 filled on the PR #2 spine. Lab plans; Mission Control executes.
+- **Canonical main (verified with `gh`):** `9f041ca3124f0f8e5c5f465eed19f042bce48a78`. Commit title: `Fill contract gaps on the PR #2 graph (#7)`. Squash-merge of PR #7 from branch `cursor/graph-breakers-gap-fill-92b3`, authored by cloud agent `bc-9a0bbb9f-aec8-551d-ab2f-14dd32c892b3`, merged 2026-09-24T23:09:12Z. If this checkpoint disagrees with GitHub, GitHub wins.
+- **Lineage on main (full merge SHAs):** handoff PR #3 `b40190f24594fd7692309a4b3f15482b333aa71d`; STATUS reconcile PR #4 `d27e6e530be2b1210a8f1aad19031705ed7a1817`; contract PR #5 `0ff9f657e45d7f33b7bf66464ef7e6cb4f7fab85`; audit PR #6 `bb2abef955507f67254f479a6a618c7db3ca827d`; gap-fill PR #7 `9f041ca3124f0f8e5c5f465eed19f042bce48a78`. Source of truth remains `docs/MISSION_CONTROL_LAB_CONTRACT.md`. `docs/PR2_CONTRACT_AUDIT.md` is the accepted gap list that #7 filled on the PR #2 spine. Lab plans; Mission Control executes.
 - **Open drafts (verified, do not merge or close):**
   - PR #1 — parts bin (`local-recovered`, `712599406ee58761d6ea7cd7157ed7045573e53a`)
   - PR #2 — graph spine (`cursor/tank-graph-recovery-c38e`, `c9695e9762d2427d7b5f31053c37d27c184445ea`)
