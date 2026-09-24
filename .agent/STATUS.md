@@ -6,7 +6,7 @@ Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQL
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T23:51:00Z
+- **Updated:** 2026-09-24T23:55:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified with `gh` before this branch):** `ed5bead687359679513c6523fa12200d07144978` — `STATUS: reconcile after PR #7 merge (#8)`. Gap-fill on main remains PR #7 `9f041ca3124f0f8e5c5f465eed19f042bce48a78`. If this checkpoint disagrees with GitHub, GitHub wins.
 - **Lineage on main (full merge SHAs):** handoff PR #3 `b40190f24594fd7692309a4b3f15482b333aa71d`; STATUS reconcile PR #4 `d27e6e530be2b1210a8f1aad19031705ed7a1817`; contract PR #5 `0ff9f657e45d7f33b7bf66464ef7e6cb4f7fab85`; audit PR #6 `bb2abef955507f67254f479a6a618c7db3ca827d`; gap-fill PR #7 `9f041ca3124f0f8e5c5f465eed19f042bce48a78`; STATUS reconcile PR #8 `ed5bead687359679513c6523fa12200d07144978`. Source of truth remains `docs/MISSION_CONTROL_LAB_CONTRACT.md`. `docs/PR2_CONTRACT_AUDIT.md` row 19 is the Pattern Synthesis gap this branch addresses. Lab plans; Mission Control executes.
