@@ -6,13 +6,14 @@ Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQL
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T21:10:00Z
+- **Updated:** 2026-09-24T21:12:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `d27e6e530be2b1210a8f1aad19031705ed7a1817` — squash-merge of PR #4 onto the handoff protocol
-- **Open PRs (verified at branch start):** #1 and #2, both draft; do not merge. This branch opens a docs-only contract draft and does not merge either recovery PR.
+- **Open PRs (verified):** #1, #2, and #5, all draft. Do not merge #1 or #2. This contract PR does not merge them.
   - PR #1 — Recover local Tank graph orchestration and repository scouting (`local-recovered`) — parts bin; draft; do not merge
   - PR #2 — Reconstruct the Mad Scientist graph on the existing Tank schema (`cursor/tank-graph-recovery-c38e`) — preferred graph spine; draft; PR body reports the graph validator passing (reported by that PR, not re-run here); do not merge
-- **Architecture contract:** `docs/MISSION_CONTROL_LAB_CONTRACT.md` (this branch) is the draft source of truth for Mission Control vs Mad Scientist Lab. Docs only.
+  - PR #5 — Freeze the Mission Control and Mad Scientist Lab contract (`cursor/mission-control-lab-contract-b9d2`) — docs-only draft for Jeffrey's review
+- **Architecture contract:** `docs/MISSION_CONTROL_LAB_CONTRACT.md` (PR #5) is the draft source of truth for Mission Control vs Mad Scientist Lab. Docs only.
 - **Merged:** PR #3 (handoff protocol) and PR #4 (STATUS reconcile after #3).
 - **Scope:** Docs-only contract. No application feature work.
 - **Next action:** Contract draft open for Jeffrey review. After accept, audit PR #2 against this contract and fill gaps from #1; then the thin vertical observability/execution slice. Implementation of app code still waits on Jeffrey accepting this contract (or explicit "build"). Do not merge #1 or #2. Do not start a third overlapping recovery PR.
