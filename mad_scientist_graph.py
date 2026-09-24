@@ -75,19 +75,23 @@ def open_graph(
     scout_task: str,
     scout_provider: str | None,
     spend_cap_usd: float | None = None,
+    max_parallel_steps: int | None = None,
 ) -> tuple[int, int]:
     """Create the graph mission and its scout step. Returns (graph_id, scout_step_id)."""
     if spend_cap_usd is not None and spend_cap_usd < 0:
         raise ValueError("Spend cap cannot be negative")
+    if max_parallel_steps is not None and max_parallel_steps < 1:
+        raise ValueError("Max parallel steps must be at least 1")
     now = _now()
     with models.get_db() as conn:
         cur = conn.execute(
             """
             INSERT INTO mad_scientist_missions
-                (mission_id, workspace_id, status, goal, spend_cap_usd, spend_usd, created_at, updated_at)
-            VALUES (?, ?, 'running', ?, ?, 0, ?, ?)
+                (mission_id, workspace_id, status, goal, spend_cap_usd, spend_usd,
+                 max_parallel_steps, created_at, updated_at)
+            VALUES (?, ?, 'running', ?, ?, 0, ?, ?, ?)
             """,
-            (mission_id, workspace_id, goal, spend_cap_usd, now, now),
+            (mission_id, workspace_id, goal, spend_cap_usd, max_parallel_steps, now, now),
         )
         graph_id = cur.lastrowid
         cur = conn.execute(

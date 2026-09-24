@@ -21,6 +21,7 @@ production = ["gunicorn>=22.0"]
 tank = "app:main"
 
 [tool.setuptools]
+# run_approval.py is not in this tree and nothing imports it, so it is not listed.
 py-modules = [
     "app",
     "config",

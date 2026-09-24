@@ -447,6 +447,7 @@ def start_mission(
     max_steps: int | None = None,
     max_fix_loops: int | None = None,
     spend_cap_usd: float | None = None,
+    max_parallel_steps: int | None = None,
 ) -> int:
     workspace = models.get_workspace_by_id(workspace_id)
     if workspace is None:
@@ -459,6 +460,8 @@ def start_mission(
     max_fix_loops = max_fix_loops if max_fix_loops is not None else config.DEFAULT_MAX_FIX_LOOPS
     if spend_cap_usd is not None and spend_cap_usd < 0:
         raise ValueError("Spend cap cannot be negative")
+    if max_parallel_steps is not None and max_parallel_steps < 1:
+        raise ValueError("Max parallel steps must be at least 1")
 
     parent_id = models.create_synthetic_parent_run(
         workspace_id,
@@ -493,6 +496,7 @@ def start_mission(
         scout_task,
         provider,
         spend_cap_usd=spend_cap_usd,
+        max_parallel_steps=max_parallel_steps,
     )
     _append_parent_log(mission, f"[tank] mad_scientist mission started: m#{mission_id} graph=#{graph_id}")
     _append_parent_log(mission, f"[tank] goal: {goal}")
@@ -756,7 +760,9 @@ def _revive_swept_parent(mission) -> None:
     parent = models.get_run(parent_id)
     if parent is None or parent["status"] != "failed":
         return
-    if parent["error"] != "Interrupted by process restart":
+    import session_manager
+
+    if parent["error"] != session_manager.INTERRUPTED_ERROR:
         return
     models.update_run(parent_id, status="running", error=None, finished_at=None)
 
@@ -810,13 +816,30 @@ def _create_step_attempt(
     return run_id
 
 
+def _effective_mission_cap(graph_row) -> int:
+    """Tighter of the mission column and TANK_MAX_PARALLEL_RUNS_PER_MISSION.
+
+    Null or 0 on either side means that side adds no extra limit. The global
+    TANK_MAX_PARALLEL_RUNS cap still applies when runs are launched.
+    """
+    caps = []
+    per_mission = None
+    if graph_row is not None:
+        per_mission = graph_row["max_parallel_steps"]
+    if per_mission:
+        caps.append(int(per_mission))
+    if config.MAX_PARALLEL_RUNS_PER_MISSION > 0:
+        caps.append(config.MAX_PARALLEL_RUNS_PER_MISSION)
+    return min(caps) if caps else 0
+
+
 def _schedule_ready_graph_steps(
     workspace,
     mission,
     graph_row,
     fallback_run_id: int | None = None,
 ) -> list[int]:
-    cap = config.MAX_PARALLEL_RUNS_PER_MISSION
+    cap = _effective_mission_cap(graph_row)
     inflight = graph.count_inflight(graph_row["id"])
     room = None if cap <= 0 else max(0, cap - inflight)
     queued = []

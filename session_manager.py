@@ -8,7 +8,6 @@ Output streams to a per-run log file under data/logs/, which the
 dashboard tails for the live output panel.
 """
 import json
-import logging
 import os
 import signal
 import subprocess
@@ -58,7 +57,9 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-INTERRUPTED_ERROR = "Interrupted by process restart"
+INTERRUPTED_ERROR = (
+    "Interrupted by a Tank restart while running; marked failed by startup recovery."
+)
 
 
 def _sync_graph_status(run_id: int) -> None:
@@ -68,34 +69,45 @@ def _sync_graph_status(run_id: int) -> None:
 
 
 def sweep_orphaned_runs() -> list[int]:
-    """Fail runs still marked running when the process starts.
+    """
+    Call once at process startup, before the queue worker begins polling.
 
-    awaiting_approval is a durable pause and is left alone. Each swept run
-    goes through the same mission completion path as a real failure so
-    fix-loop counters, graph fan-in, and mission status catch up. A swept
-    run is not auto-resumed.
+    Any run left in 'running' status was actively executing when the
+    process last stopped (crash, kill, restart). No thread is coming back
+    to finish it -- providers.start_run's on_finished callback only ever
+    fires from the process that started the run -- so left alone, these
+    rows stay 'running' forever. That's more than cosmetic: the graph
+    treats 'running' as active, so an orphaned scout/fixer attempt
+    permanently blocks retries on that mission, and a stuck child run
+    blocks a crew parent from ever finishing.
+
+    Mark each as failed and route it through the same completion path a
+    real failure would take (mission.advance_mission), so mission/graph
+    state -- fix-loop counters, fan-in, mission status -- catches up
+    exactly as it would for any other failed run.
+
+    'awaiting_approval' runs are deliberately left untouched: that status
+    is a durable paused state waiting on a human, not an artifact of an
+    interrupted process, and it's fine as-is across a restart.
+
+    Returns the swept run ids. Callers that only need a count can use len().
     """
     swept = []
     for run in models.list_running_runs():
-        try:
-            if run["log_path"]:
-                local_agent._log(
-                    run["log_path"],
-                    "\n[tank] run interrupted by process restart\n",
-                )
-            models.update_run(
-                run["id"],
-                status="failed",
-                error=INTERRUPTED_ERROR,
-                finished_at=_now(),
-                pid=None,
+        if run["log_path"]:
+            local_agent._log(
+                run["log_path"],
+                "\n[tank] run interrupted by a Tank restart while running\n",
             )
-            mission.advance_mission(run["id"])
-            swept.append(run["id"])
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "failed to sweep orphaned run %s", run["id"]
-            )
+        models.update_run(
+            run["id"],
+            status="failed",
+            error=INTERRUPTED_ERROR,
+            finished_at=_now(),
+            pid=None,
+        )
+        mission.advance_mission(run["id"])
+        swept.append(run["id"])
     return swept
 
 

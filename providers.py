@@ -48,6 +48,34 @@ _registry: dict[str, dict] = {}
 _default_provider: str = "claude_code"
 
 
+_ALLOWED_API_KEY_DEFAULT = "lm-studio"
+
+
+def _reject_tracked_api_key_defaults(path: str, registry: dict) -> None:
+    """Refuse a real key pasted into the tracked providers.yaml."""
+    if os.path.basename(path) != "providers.yaml":
+        return
+    leaked = []
+    for provider_id, cfg in registry.items():
+        if not isinstance(cfg, dict):
+            continue
+        default = cfg.get("api_key_default")
+        if default is None:
+            continue
+        text = str(default).strip()
+        if text and text != _ALLOWED_API_KEY_DEFAULT:
+            leaked.append(str(provider_id))
+    if not leaked:
+        return
+    names = ", ".join(sorted(leaked))
+    raise RuntimeError(
+        "providers.yaml has api_key_default set for "
+        f"{names}. That file is tracked. Move the key to an environment "
+        "variable (api_key_env) or to providers.local.yaml. The only literal "
+        f"default allowed in providers.yaml is {_ALLOWED_API_KEY_DEFAULT!r}."
+    )
+
+
 def load_providers():
     """Load provider definitions from providers.yaml (or env override)."""
     global _registry, _default_provider
@@ -62,7 +90,9 @@ def load_providers():
         _default_provider = "claude_code"
         return
 
-    _registry = doc.get("providers") or {}
+    registry = doc.get("providers") or {}
+    _reject_tracked_api_key_defaults(path, registry)
+    _registry = registry
     _default_provider = (
         os.environ.get("TANK_DEFAULT_PROVIDER")
         or doc.get("default_provider")

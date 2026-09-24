@@ -7,6 +7,11 @@ runs on any Python install (local venv, system Python, production WSGI).
 import os
 import sys
 
+# TODO: BASE_DIR is the live checkout for `pip install -e .`. A non-editable
+# install still has to find templates/, static/, and the default YAML configs
+# through share/tank (see share_subdir and _default_config_file). Turning the
+# flat modules into a tank/ package with package_data is out of scope; the
+# documented workflow remains an editable install.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 

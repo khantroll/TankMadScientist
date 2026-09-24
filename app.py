@@ -39,8 +39,11 @@ def _start_background_workers():
     models.init_db()
     swept = session_manager.sweep_orphaned_runs()
     if swept:
-        ids = ", ".join(f"#{run_id}" for run_id in swept)
-        print(f"[tank] swept {len(swept)} orphaned running run(s): {ids}")
+        _log.warning(
+            "Tank startup recovery: marked %d run(s) failed that were still "
+            "'running' from before this restart",
+            len(swept),
+        )
     threading.Thread(
         target=session_manager.queue_worker_loop, args=(_stop_event,), daemon=True
     ).start()
@@ -482,10 +485,11 @@ def launch_crew(slug):
         if raw_role_id:
             try:
                 role = models.get_role_by_id(int(raw_role_id))
-                if role:
-                    agent_cfg["role_slug"] = role["slug"]
             except (ValueError, TypeError):
-                pass
+                role = None
+            if role is None or role["workspace_id"] != ws["id"]:
+                return _err("Role does not belong to this workspace.")
+            agent_cfg["role_slug"] = role["slug"]
 
         suffix = (task_suffixes[i] if i < len(task_suffixes) else "").strip()
         if suffix:
@@ -631,7 +635,17 @@ def start_mad_scientist(slug):
     max_steps = request.form.get("mad_max_steps", type=int)
     max_fix_loops = request.form.get("mad_max_fix_loops", type=int)
     spend_raw = (request.form.get("mad_spend_cap_usd") or "").strip()
+    parallel_raw = (request.form.get("mad_max_parallel_steps") or "").strip()
     spend_cap = None
+    max_parallel_steps = None
+    if parallel_raw:
+        try:
+            max_parallel_steps = int(parallel_raw)
+        except ValueError:
+            resp = make_response("<p class='form-error'>Max parallel steps must be a whole number</p>")
+            resp.headers["HX-Retarget"] = "#mad-scientist-error"
+            resp.headers["HX-Reswap"] = "innerHTML"
+            return resp
     if spend_raw:
         try:
             spend_cap = float(spend_raw)
@@ -650,6 +664,7 @@ def start_mad_scientist(slug):
             max_steps=max_steps,
             max_fix_loops=max_fix_loops,
             spend_cap_usd=spend_cap,
+            max_parallel_steps=max_parallel_steps,
         )
     except ValueError as exc:
         resp = make_response(f"<p class='form-error'>{exc}</p>")
@@ -667,9 +682,9 @@ def retry_mad_scientist_scout(slug, mission_id):
     ws = models.get_workspace(slug)
     if ws is None:
         return "Workspace not found", 404
-    mission_row = models.get_mission(mission_id)
-    if mission_row is None or mission_row["workspace_id"] != ws["id"]:
-        return "Mission not found", 404
+    graph_mission = models.get_mad_scientist_mission_for_mission(mission_id)
+    if graph_mission is None or graph_mission["workspace_id"] != ws["id"]:
+        return "Mad Scientist mission not found for this workspace", 404
     try:
         mad_scientist.retry_scout(mission_id)
     except ValueError as exc:

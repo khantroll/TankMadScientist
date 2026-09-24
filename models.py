@@ -23,9 +23,11 @@ def _now():
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(config.DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         yield conn
         conn.commit()
@@ -118,6 +120,7 @@ CREATE TABLE IF NOT EXISTS mad_scientist_missions (
     summary TEXT,
     spend_cap_usd REAL,
     spend_usd REAL NOT NULL DEFAULT 0,
+    max_parallel_steps INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -196,6 +199,7 @@ def _migrate_db(conn):
         ("missions", "plan_json", "TEXT"),
         ("missions", "max_steps", "INTEGER"),
         ("missions", "max_fix_loops", "INTEGER"),
+        ("mad_scientist_missions", "max_parallel_steps", "INTEGER"),
     ]
     for table, column, col_type in migrations:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -601,16 +605,35 @@ def count_running_runs():
 
 
 def list_running_runs():
-    """Every run still marked running, including synthetic parent runs.
-
-    Unlike list_pending_runs and count_running_runs, this is not filtered by
-    provider. Startup recovery needs crew_builder and mad_scientist parents
-    as well as ordinary agent runs.
+    """
+    All runs currently marked 'running', with no provider filter --
+    unlike list_pending_runs/count_running_runs, this intentionally
+    includes crew_builder and mad_scientist parent runs too, since a
+    startup sweep needs to catch every run a crashed process left
+    stranded, not just ones the generic queue worker would pick up.
     """
     with get_db() as conn:
         return conn.execute(
             "SELECT * FROM runs WHERE status = 'running' ORDER BY id"
         ).fetchall()
+
+
+def get_mad_scientist_mission(graph_mission_id):
+    """Graph row by mad_scientist_missions.id. Includes workspace_id."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_missions WHERE id = ?",
+            (graph_mission_id,),
+        ).fetchone()
+
+
+def get_mad_scientist_mission_for_mission(mission_id):
+    """Graph row for a Tank mission id. The retry-scout URL uses that id."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_missions WHERE mission_id = ?",
+            (mission_id,),
+        ).fetchone()
 
 
 def get_run_payload(run_id):

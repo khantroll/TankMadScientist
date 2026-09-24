@@ -238,7 +238,9 @@ the graph. Tank queues every ready logical step whose dependency edges
 point only to completed steps. The global `TANK_MAX_PARALLEL_RUNS` cap
 still decides how many attempt runs actually execute at once. Set
 `TANK_MAX_PARALLEL_RUNS_PER_MISSION` when one wide mission should not
-occupy every slot. When a step has multiple dependencies, Tank sets
+occupy every slot. The mission form's Parallel steps field stores
+`mad_scientist_missions.max_parallel_steps` for that mission only; leave
+it blank for no extra limit. When both are set, the smaller one applies. When a step has multiple dependencies, Tank sets
 `run.parent_run_id` to the newest completed dependency run, and injects
 localized context from **all direct dependency steps** into the task.
 
