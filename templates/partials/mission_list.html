@@ -48,6 +48,76 @@
       {% if g.blocked_reason %}
         <div class="graph-block-reason">Blocked: {{ g.blocked_reason }}</div>
       {% endif %}
+      {% if entry.synthesis %}
+        {% set s = entry.synthesis %}
+        <div class="pattern-synthesis">
+          <h4>Pattern synthesis: {{ s.action }}{% if s.name %} · {{ s.name }}{% endif %}</h4>
+          {% if s.inspected_crews or s.inspected_roles %}
+            <p>
+              Inspected
+              {% if s.inspected_crews %}
+                crews
+                {% for crew in s.inspected_crews %}{{ crew.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+              {% endif %}
+              {% if s.inspected_roles %}
+                · roles
+                {% for role in s.inspected_roles %}{{ role.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+              {% endif %}
+            </p>
+          {% endif %}
+          {% if s.roles %}
+            <p>
+              Roles:
+              {% for role in s.roles %}
+                {{ role.name }}{% if role.provider %} ({{ role.provider }}){% endif %}{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            </p>
+          {% endif %}
+          {% if s.tools %}
+            <p>Tools: {{ s.tools | join(', ') }}</p>
+          {% endif %}
+          {% if s.provider_preferences.by_role %}
+            <p>
+              Provider preferences:
+              {% for role, provider in s.provider_preferences.by_role.items() %}
+                {{ role }}={{ provider }}{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            </p>
+          {% endif %}
+          {% if s.changes %}
+            <ul>
+              {% for change in s.changes %}
+                <li>{{ change }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+          {% if s.rationale %}
+            <p>{{ s.rationale }}</p>
+          {% endif %}
+          {% if s.needs_confirmation %}
+            <p>This generated crew can run for this mission now. Confirm it to keep it as a reusable crew in workspace memory.</p>
+            <form class="pattern-actions"
+                  hx-post="{{ url_for('confirm_generated_crew', slug=workspace.slug, mission_id=m.id) }}"
+                  hx-target="#mission-list"
+                  hx-swap="innerHTML">
+              <button class="btn btn-sm" type="submit" name="decision" value="confirm">Confirm as reusable</button>
+              <button class="btn btn-sm" type="submit" name="decision" value="mission_only">Use for this mission only</button>
+            </form>
+          {% elif s.confirmed %}
+            <p>Confirmed as a reusable crew in workspace memory. Later Lab missions can reuse it.</p>
+          {% elif s.mission_only %}
+            <p>Using this crew for this mission only. It stays with this mission.</p>
+          {% endif %}
+          {% if s.specialists %}
+            <p>
+              Specialists:
+              {% for spec in s.specialists %}
+                {{ spec.role }} {{ spec.action }} {{ spec.name }}{% if not loop.last %}; {% endif %}
+              {% endfor %}
+            </p>
+          {% endif %}
+        </div>
+      {% endif %}
       <ul class="graph-steps">
         {% for step in g.steps %}
         <li class="graph-step">

@@ -512,6 +512,31 @@ textarea { font-family: var(--font-mono); min-height: 70px; resize: vertical; }
   font-size: 12px;
 }
 
+.pattern-synthesis {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.pattern-synthesis h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.pattern-synthesis p,
+.pattern-synthesis ul {
+  margin: 4px 0;
+}
+
+.pattern-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .mission-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
