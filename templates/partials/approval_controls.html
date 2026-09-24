@@ -1,0 +1,16 @@
+{% if approval and approval.approval_available %}
+  <span class="approval-controls">
+    <button type="button"
+            class="btn btn-sm"
+            hx-post="{{ url_for('approve_run_patch', run_id=approval.run_id) }}"
+            hx-swap="none">
+      Approve #{{ approval.run_id }}
+    </button>
+    <button type="button"
+            class="btn btn-sm btn-cancel"
+            hx-post="{{ url_for('reject_run_patch', run_id=approval.run_id) }}"
+            hx-swap="none">
+      Reject #{{ approval.run_id }}
+    </button>
+  </span>
+{% endif %}

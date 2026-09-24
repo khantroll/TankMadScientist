@@ -23,9 +23,11 @@ def _now():
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(config.DB_PATH)
+    conn = sqlite3.connect(config.DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         yield conn
         conn.commit()
@@ -108,6 +110,75 @@ CREATE TABLE IF NOT EXISTS workspace_memory (
     updated_at TEXT NOT NULL,
     UNIQUE(workspace_id, key)
 );
+
+CREATE TABLE IF NOT EXISTS mad_scientist_missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL UNIQUE REFERENCES missions(id) ON DELETE CASCADE,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'running',
+    goal TEXT NOT NULL,
+    summary TEXT,
+    spend_cap_usd REAL,
+    spend_usd REAL NOT NULL DEFAULT 0,
+    max_parallel_steps INTEGER,
+    blocked_reason TEXT,
+    token_cap INTEGER,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mad_scientist_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    graph_mission_id INTEGER NOT NULL REFERENCES mad_scientist_missions(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    provider TEXT,
+    task TEXT NOT NULL,
+    write_allowed INTEGER NOT NULL DEFAULT 0,
+    success_criteria TEXT,
+    status TEXT NOT NULL DEFAULT 'planned',
+    position INTEGER NOT NULL DEFAULT 0,
+    unresolved_dependencies TEXT,
+    blocked_reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(graph_mission_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS mad_scientist_step_dependencies (
+    step_id INTEGER NOT NULL REFERENCES mad_scientist_steps(id) ON DELETE CASCADE,
+    depends_on_step_id INTEGER NOT NULL REFERENCES mad_scientist_steps(id) ON DELETE CASCADE,
+    PRIMARY KEY (step_id, depends_on_step_id)
+);
+
+CREATE TABLE IF NOT EXISTS mad_scientist_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    step_id INTEGER NOT NULL REFERENCES mad_scientist_steps(id) ON DELETE CASCADE,
+    run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,
+    attempt_kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    cost_usd REAL,
+    tokens INTEGER,
+    patch_hash TEXT,
+    error_hash TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    mission_id INTEGER REFERENCES missions(id) ON DELETE SET NULL,
+    subject_run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+    evaluator_run_id INTEGER UNIQUE REFERENCES runs(id) ON DELETE SET NULL,
+    step_id INTEGER REFERENCES mad_scientist_steps(id) ON DELETE SET NULL,
+    evaluator_provider TEXT,
+    verdict TEXT NOT NULL,
+    critique TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -136,6 +207,15 @@ def _migrate_db(conn):
         ("missions", "plan_json", "TEXT"),
         ("missions", "max_steps", "INTEGER"),
         ("missions", "max_fix_loops", "INTEGER"),
+        ("mad_scientist_missions", "max_parallel_steps", "INTEGER"),
+        ("mad_scientist_missions", "blocked_reason", "TEXT"),
+        ("mad_scientist_missions", "token_cap", "INTEGER"),
+        ("mad_scientist_missions", "tokens_used", "INTEGER NOT NULL DEFAULT 0"),
+        ("mad_scientist_missions", "max_attempts", "INTEGER"),
+        ("mad_scientist_steps", "blocked_reason", "TEXT"),
+        ("mad_scientist_attempts", "tokens", "INTEGER"),
+        ("mad_scientist_attempts", "patch_hash", "TEXT"),
+        ("mad_scientist_attempts", "error_hash", "TEXT"),
     ]
     for table, column, col_type in migrations:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -386,11 +466,22 @@ def resolve_run_provider(workspace, provider=None):
     return providers.get_default_provider()
 
 
+def _assert_role_in_workspace(workspace_id, role_id):
+    """Reject a role id that belongs to a different workspace."""
+    if role_id is None or role_id == "":
+        return None
+    role = get_role_by_id(role_id)
+    if role is None or int(role["workspace_id"]) != int(workspace_id):
+        raise ValueError("Role does not belong to this workspace")
+    return role["id"]
+
+
 def create_run(
     workspace_id, role_id, task, provider=None, parent_run_id=None, chain_latest=False,
     mission_id=None, stage_name=None, persona_override=None, crew_run_id=None,
 ):
     workspace = get_workspace_by_id(workspace_id)
+    role_id = _assert_role_in_workspace(workspace_id, role_id)
     provider = resolve_run_provider(workspace, provider)
 
     if chain_latest:
@@ -529,6 +620,38 @@ def count_running_runs():
         return row["n"]
 
 
+def list_running_runs():
+    """
+    All runs currently marked 'running', with no provider filter --
+    unlike list_pending_runs/count_running_runs, this intentionally
+    includes crew_builder and mad_scientist parent runs too, since a
+    startup sweep needs to catch every run a crashed process left
+    stranded, not just ones the generic queue worker would pick up.
+    """
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM runs WHERE status = 'running' ORDER BY id"
+        ).fetchall()
+
+
+def get_mad_scientist_mission(graph_mission_id):
+    """Graph row by mad_scientist_missions.id. Includes workspace_id."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_missions WHERE id = ?",
+            (graph_mission_id,),
+        ).fetchone()
+
+
+def get_mad_scientist_mission_for_mission(mission_id):
+    """Graph row for a Tank mission id. The retry-scout URL uses that id."""
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM mad_scientist_missions WHERE mission_id = ?",
+            (mission_id,),
+        ).fetchone()
+
+
 def get_run_payload(run_id):
     run = get_run(run_id)
     if run is None or not run["agent_payload"]:
@@ -551,6 +674,7 @@ def update_run(run_id, **fields):
 
 def create_schedule(workspace_id, role_id, task, cron_expr, provider=None):
     workspace = get_workspace_by_id(workspace_id)
+    role_id = _assert_role_in_workspace(workspace_id, role_id)
     provider = resolve_run_provider(workspace, provider)
     with get_db() as conn:
         cur = conn.execute(
@@ -676,6 +800,48 @@ def get_workspace_memory(workspace_id, key="mad_scientist"):
         return json.loads(row["value"])
     except json.JSONDecodeError:
         return {"raw": row["value"]}
+
+
+def insert_evaluation(
+    workspace_id,
+    verdict,
+    mission_id=None,
+    subject_run_id=None,
+    evaluator_run_id=None,
+    step_id=None,
+    evaluator_provider=None,
+    critique=None,
+):
+    """Record one cross-model critique. A second row for the same evaluator run is ignored."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO evaluations
+                (workspace_id, mission_id, subject_run_id, evaluator_run_id, step_id,
+                 evaluator_provider, verdict, critique, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                workspace_id,
+                mission_id,
+                subject_run_id,
+                evaluator_run_id,
+                step_id,
+                evaluator_provider,
+                verdict,
+                critique,
+                _now(),
+            ),
+        )
+        return cur.lastrowid
+
+
+def list_evaluations_for_mission(mission_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM evaluations WHERE mission_id = ? ORDER BY id",
+            (mission_id,),
+        ).fetchall()
 
 
 def upsert_workspace_memory(workspace_id, key, value):

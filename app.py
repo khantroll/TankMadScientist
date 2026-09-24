@@ -19,6 +19,7 @@ import config
 import git_sync
 import log_format
 import mad_scientist
+import mad_scientist_graph
 import mission
 import models
 import providers
@@ -27,8 +28,8 @@ import session_manager
 
 app = Flask(
     __name__,
-    template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"),
-    static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"),
+    template_folder=config.share_subdir("templates"),
+    static_folder=config.share_subdir("static"),
 )
 
 _stop_event = threading.Event()
@@ -36,6 +37,13 @@ _stop_event = threading.Event()
 
 def _start_background_workers():
     models.init_db()
+    swept = session_manager.sweep_orphaned_runs()
+    if swept:
+        _log.warning(
+            "Tank startup recovery: marked %d run(s) failed that were still "
+            "'running' from before this restart",
+            len(swept),
+        )
     threading.Thread(
         target=session_manager.queue_worker_loop, args=(_stop_event,), daemon=True
     ).start()
@@ -210,7 +218,11 @@ def _mission_list_context(ws):
     missions = models.list_missions(ws["id"], limit=10)
     return {
         "mission_entries": [
-            {"mission": m, "runs": models.list_mission_runs(m["id"])}
+            {
+                "mission": m,
+                "runs": models.list_mission_runs(m["id"]),
+                "graph": mad_scientist_graph.mission_view(m["id"]),
+            }
             for m in missions
         ],
         "workspace": ws,
@@ -225,7 +237,14 @@ def api_version():
     return {
         "version": config.TANK_VERSION,
         "template_folder": app.template_folder,
-        "features": ["cancel_run", "delete_workspace", "resume_mission", "mad_scientist"],
+        "features": [
+            "cancel_run",
+            "delete_workspace",
+            "resume_mission",
+            "mad_scientist",
+            "mad_scientist_graph",
+            "restart_sweep",
+        ],
         "default_provider": default,
         "provider_keys": {
             pid: providers.provider_key_status(pid)
@@ -466,10 +485,11 @@ def launch_crew(slug):
         if raw_role_id:
             try:
                 role = models.get_role_by_id(int(raw_role_id))
-                if role:
-                    agent_cfg["role_slug"] = role["slug"]
             except (ValueError, TypeError):
-                pass
+                role = None
+            if role is None or role["workspace_id"] != ws["id"]:
+                return _err("Role does not belong to this workspace.")
+            agent_cfg["role_slug"] = role["slug"]
 
         suffix = (task_suffixes[i] if i < len(task_suffixes) else "").strip()
         if suffix:
@@ -614,6 +634,27 @@ def start_mad_scientist(slug):
     provider = request.form.get("mad_provider") or None
     max_steps = request.form.get("mad_max_steps", type=int)
     max_fix_loops = request.form.get("mad_max_fix_loops", type=int)
+    spend_raw = (request.form.get("mad_spend_cap_usd") or "").strip()
+    parallel_raw = (request.form.get("mad_max_parallel_steps") or "").strip()
+    spend_cap = None
+    max_parallel_steps = None
+    if parallel_raw:
+        try:
+            max_parallel_steps = int(parallel_raw)
+        except ValueError:
+            resp = make_response("<p class='form-error'>Max parallel steps must be a whole number</p>")
+            resp.headers["HX-Retarget"] = "#mad-scientist-error"
+            resp.headers["HX-Reswap"] = "innerHTML"
+            return resp
+    if spend_raw:
+        try:
+            spend_cap = float(spend_raw)
+        except ValueError:
+            spend_cap = None
+            resp = make_response("<p class='form-error'>Spend cap must be a number of USD</p>")
+            resp.headers["HX-Retarget"] = "#mad-scientist-error"
+            resp.headers["HX-Reswap"] = "innerHTML"
+            return resp
 
     try:
         mad_scientist.start_mission(
@@ -622,6 +663,8 @@ def start_mad_scientist(slug):
             provider=provider,
             max_steps=max_steps,
             max_fix_loops=max_fix_loops,
+            spend_cap_usd=spend_cap,
+            max_parallel_steps=max_parallel_steps,
         )
     except ValueError as exc:
         resp = make_response(f"<p class='form-error'>{exc}</p>")
@@ -634,11 +677,34 @@ def start_mad_scientist(slug):
     return resp
 
 
+@app.route("/workspaces/<slug>/mad-scientist/<int:mission_id>/retry-scout", methods=["POST"])
+def retry_mad_scientist_scout(slug, mission_id):
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    graph_mission = models.get_mad_scientist_mission_for_mission(mission_id)
+    if graph_mission is None or graph_mission["workspace_id"] != ws["id"]:
+        return "Mad Scientist mission not found for this workspace", 404
+    try:
+        mad_scientist.retry_scout(mission_id)
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+    resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
 @app.route("/workspaces/<slug>/missions/<int:mission_id>/resume", methods=["POST"])
 def resume_mission_route(slug, mission_id):
     ws = models.get_workspace(slug)
     if ws is None:
         return "Workspace not found", 404
+    mission_row = models.get_mission(mission_id)
+    if mission_row is None or mission_row["workspace_id"] != ws["id"]:
+        return "Mission not found", 404
     from_run_raw = request.form.get("from_run_id", "").strip()
     from_run_id = int(from_run_raw) if from_run_raw.isdigit() else None
     provider = request.form.get("provider") or None
@@ -706,7 +772,10 @@ def create_schedule():
     task = request.form["task"].strip()
     cron_expr = request.form["cron_expr"].strip()
     provider = request.form.get("provider") or None
-    models.create_schedule(workspace_id, role_id, task, cron_expr, provider=provider)
+    try:
+        models.create_schedule(workspace_id, role_id, task, cron_expr, provider=provider)
+    except ValueError as exc:
+        return str(exc), 400
     scheduler.reload_jobs()
     return redirect(url_for("schedules_page"))
 

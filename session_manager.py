@@ -57,6 +57,60 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+INTERRUPTED_ERROR = (
+    "Interrupted by a Tank restart while running; marked failed by startup recovery."
+)
+
+
+def _sync_graph_status(run_id: int) -> None:
+    import mad_scientist_graph as graph
+
+    graph.sync_run_status(run_id)
+
+
+def sweep_orphaned_runs() -> list[int]:
+    """
+    Call once at process startup, before the queue worker begins polling.
+
+    Any run left in 'running' status was actively executing when the
+    process last stopped (crash, kill, restart). No thread is coming back
+    to finish it -- providers.start_run's on_finished callback only ever
+    fires from the process that started the run -- so left alone, these
+    rows stay 'running' forever. That's more than cosmetic: the graph
+    treats 'running' as active, so an orphaned scout/fixer attempt
+    permanently blocks retries on that mission, and a stuck child run
+    blocks a crew parent from ever finishing.
+
+    Mark each as failed and route it through the same completion path a
+    real failure would take (mission.advance_mission), so mission/graph
+    state -- fix-loop counters, fan-in, mission status -- catches up
+    exactly as it would for any other failed run.
+
+    'awaiting_approval' runs are deliberately left untouched: that status
+    is a durable paused state waiting on a human, not an artifact of an
+    interrupted process, and it's fine as-is across a restart.
+
+    Returns the swept run ids. Callers that only need a count can use len().
+    """
+    swept = []
+    for run in models.list_running_runs():
+        if run["log_path"]:
+            local_agent._log(
+                run["log_path"],
+                "\n[tank] run interrupted by a Tank restart while running\n",
+            )
+        models.update_run(
+            run["id"],
+            status="failed",
+            error=INTERRUPTED_ERROR,
+            finished_at=_now(),
+            pid=None,
+        )
+        mission.advance_mission(run["id"])
+        swept.append(run["id"])
+    return swept
+
+
 def launch_run(run_id):
     """Start a single pending run. Safe to call directly for a manual launch."""
     run = models.get_run(run_id)
@@ -165,6 +219,7 @@ def launch_run(run_id):
         log_path=log_path,
         started_at=_now(),
     )
+    _sync_graph_status(run_id)
 
 
 def launch_pending():
@@ -189,10 +244,23 @@ def approve_run(run_id):
     response_type = payload.get("response_type")
 
     # Plan-type responses require no file changes — acknowledgement just marks done.
+    # Tester and reviewer plans still need a real command exit code.
     if response_type == "plan":
         if run["log_path"]:
             local_agent._log(run["log_path"], "\n[tank] plan acknowledged by user\n")
-        models.update_run(run_id, status="done", finished_at=_now())
+        import mad_scientist_graph as graph
+
+        attempt = graph.get_attempt_by_run(run_id)
+        step = graph.get_step(attempt["step_id"]) if attempt is not None else None
+        role = step["role"] if step is not None else None
+        if role in graph.VERIFIER_ROLES and not graph.payload_has_verification(payload, role):
+            reason = (
+                f"Step '{step['name']}' ({role}) cannot complete on a model summary. "
+                "A real test, build, or diff command must run and exit 0."
+            )
+            models.update_run(run_id, status="failed", error=reason, finished_at=_now())
+        else:
+            models.update_run(run_id, status="done", finished_at=_now())
         mission.advance_mission(run_id)
         return True
 
@@ -228,10 +296,30 @@ def approve_run(run_id):
             workspace["repo_path"], payload, run["log_path"],
             workspace=dict(workspace), authorized_tools=authorized,
         )
+        payload["tool_exit_code"] = code
+        import mad_scientist_graph as graph
+
+        attempt = graph.get_attempt_by_run(run_id)
+        step = graph.get_step(attempt["step_id"]) if attempt is not None else None
+        role = step["role"] if step is not None else None
+        verified = graph.payload_has_verification(payload, role)
+        if role in graph.VERIFIER_ROLES and not verified:
+            status = "failed"
+            error = (
+                f"Step '{step['name']}' ({role}) cannot complete on a model summary. "
+                "A real test, build, or diff command must run and exit 0."
+            )
+            if code != 0:
+                error = f"Verification command exited {code}"
+        else:
+            status = "done" if code == 0 else "failed"
+            error = None if code == 0 else f"Verification command exited {code}"
         models.update_run(
             run_id,
-            status="done" if code == 0 else "failed",
+            status=status,
+            error=error,
             finished_at=_now(),
+            agent_payload=json.dumps(payload),
         )
     except Exception as exc:
         local_agent._log(run["log_path"], f"[tank] apply failed: {exc}\n")
