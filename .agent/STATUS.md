@@ -2,19 +2,20 @@
 
 > Shared handoff checkpoint for humans and AI agents. **GitHub/repository state is authoritative**; this file is a concise continuity aid, not a substitute for inspecting code, PRs, or CI. Never restart valid work because this checkpoint is stale.
 
-Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQLite + HTMX) with Mad Scientist graph missions. `main` is the recovered baseline described in `RECOVERY_NOTES.md`.
+Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQLite + HTMX). North star: AI workflow compiler/runtime — Intent → DAG → Artifact; Mission Control must stay useful alone; Mad Scientist Lab plans and manages graphs; prefer continuing PR #2 over a third recovery PR.
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T21:01:30Z
+- **Updated:** 2026-09-24T21:03:52Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `618ac2b86881d94db43cfd63d52dd6b848454918` — recovered baseline (`RECOVERY_NOTES.md`)
-- **Open PRs (verified):**
+- **Canonical main (verified):** `b40190f24594fd7692309a4b3f15482b333aa71d` — squash-merge of PR #3 onto the recovered baseline (`RECOVERY_NOTES.md`)
+- **Open PRs (verified):** only #1 and #2; both draft; do not merge
   - PR #1 — Recover local Tank graph orchestration and repository scouting (`local-recovered`) — earlier recovery snapshot; draft; do not merge
-  - PR #2 — Reconstruct the Mad Scientist graph on the existing Tank schema (`cursor/tank-graph-recovery-c38e`) — preferred current graph-reconstruction line; draft; PR body reports the graph validator passing (reported by that PR, not re-run here); auth and bounded repository discovery still later; do not merge
-  - PR #3 — Add .agent STATUS handoff protocol (`cursor/agent-handoff-protocol-aece`) — this docs-only draft
-- **Scope:** This PR only bootstraps `.agent/` continuity files. No application feature work.
-- **Next action:** Wait for Jeffrey's additional Tank documentation before starting implementation. Do not merge PR #1 or #2 automatically. Prefer continuing PR #2 over restarting graph work. Do not start a third overlapping recovery PR.
+  - PR #2 — Reconstruct the Mad Scientist graph on the existing Tank schema (`cursor/tank-graph-recovery-c38e`) — preferred graph line; draft; PR body reports the graph validator passing (reported by that PR, not re-run here); auth and bounded repository discovery still later; do not merge
+- **Merged:** PR #3 — Add .agent STATUS handoff protocol — merged to `main` as `b40190f24594fd7692309a4b3f15482b333aa71d`
+- **Docs:** Jeffrey delivered three AI recollection docs in chat (digested). Implementation remains paused until he says go.
+- **Scope:** Continuity refresh only. No application feature work.
+- **Next action:** Await Jeffrey's explicit go on the first implementation slice and on the #1 vs #2 merge strategy. Prefer PR #2 for graph work. Do not auto-merge #1 or #2. Do not start a third overlapping recovery PR.
 
 ## Handoff protocol
 
