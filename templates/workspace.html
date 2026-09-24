@@ -84,9 +84,17 @@
               <label for="mad_max_fix_loops">Fix loops</label>
               <input type="number" name="mad_max_fix_loops" id="mad_max_fix_loops" min="0" max="6" value="3">
             </div>
+            <div>
+              <label for="mad_spend_cap_usd">Spend cap (USD)</label>
+              <input type="number" name="mad_spend_cap_usd" id="mad_spend_cap_usd" min="0" step="0.01" placeholder="optional">
+            </div>
+            <div>
+              <label for="mad_max_parallel_steps">Parallel steps</label>
+              <input type="number" name="mad_max_parallel_steps" id="mad_max_parallel_steps" min="1" max="12" placeholder="optional">
+            </div>
           </div>
 
-          <p class="form-hint">Tank starts with a scout, generates a JSON execution plan, then queues concrete child runs under one parent. File changes still wait for approval.</p>
+          <p class="form-hint">Tank starts with a scout, stores the plan as a durable step graph, then queues every ready step whose dependencies are done. File changes still wait for approval. The spend cap applies when a provider reports cost; leave it blank for no cap.</p>
           <button class="btn" type="submit">Start Mad Scientist Mission</button>
         </form>
         <div id="mad-scientist-error"></div>

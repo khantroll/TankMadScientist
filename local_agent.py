@@ -30,6 +30,8 @@ ANALYSIS_REPORT_PROMPT = prompt_library.ANALYSIS_REPORT_PROMPT
 
 
 def _log(log_path: str, message: str):
+    if not log_path:
+        return
     with open(log_path, "a", encoding="utf-8", buffering=1) as f:
         f.write(message)
         if not message.endswith("\n"):
@@ -77,7 +79,29 @@ def _http_error_message(exc: urllib.error.HTTPError, cfg: dict) -> str:
     return f"HTTP {exc.code}: {detail}"
 
 
-def _call_chat_model(cfg: dict, system_prompt: str, user_message: str, json_mode: bool | None = None) -> str:
+def _usage_cost_usd(usage) -> float | None:
+    if not isinstance(usage, dict):
+        return None
+    for key in ("cost_usd", "cost", "total_cost"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return None
+
+
+def _add_cost(total: float, cost: float | None) -> float:
+    if cost is None or cost <= 0:
+        return total
+    return total + cost
+
+
+def _attach_cost(payload: dict, cost: float) -> dict:
+    if cost > 0:
+        payload["cost_usd"] = round(cost, 6)
+    return payload
+
+
+def _call_chat_model(cfg: dict, system_prompt: str, user_message: str, json_mode: bool | None = None) -> tuple[str, float | None]:
     base_url = cfg.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/")
     model = cfg.get("model")
     if not model:
@@ -112,7 +136,7 @@ def _call_chat_model(cfg: dict, system_prompt: str, user_message: str, json_mode
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raise ValueError(_http_error_message(exc, cfg)) from exc
-    return payload["choices"][0]["message"]["content"]
+    return payload["choices"][0]["message"]["content"], _usage_cost_usd(payload.get("usage"))
 
 
 def _extract_json(text: str) -> dict:
@@ -403,16 +427,19 @@ def _prepare_analysis_run(
     )
 
     _log(ctx.log_path, "[tank] analysis mode: markdown report\n")
-    raw = _call_chat_model(cfg, system_prompt, user_message, json_mode=False)
+    cost = 0.0
+    raw, call_cost = _call_chat_model(cfg, system_prompt, user_message, json_mode=False)
+    cost = _add_cost(cost, call_cost)
 
     if output_quality.looks_like_meta_plan(raw):
         _log(ctx.log_path, "[tank] meta-plan detected — retrying with stricter instructions\n")
-        raw = _call_chat_model(
+        raw, call_cost = _call_chat_model(
             cfg,
             system_prompt,
             user_message + "\n\n" + output_quality.RETRY_NUDGE,
             json_mode=False,
         )
+        cost = _add_cost(cost, call_cost)
 
     if output_quality.looks_like_meta_plan(raw):
         _log(ctx.log_path, "[tank] warning: response may still be low quality\n")
@@ -427,7 +454,7 @@ def _prepare_analysis_run(
     }
     _log(ctx.log_path, f"\n=== Summary ===\n{payload['summary']}\n")
     _log(ctx.log_path, f"\n=== Report ===\n{payload['plan']}\n")
-    return payload
+    return _attach_cost(payload, cost)
 
 
 def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
@@ -472,7 +499,7 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
         project_profile=profile,
         workspace_test_command=ctx.workspace.get("test_command"),
     )
-    raw = _call_chat_model(cfg, system_prompt, user_message)
+    raw, cost = _call_chat_model(cfg, system_prompt, user_message)
     _log(ctx.log_path, "[tank] model response received\n")
 
     try:
@@ -524,7 +551,7 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
     if requested:
         _log(ctx.log_path, f"\n[tank] model requested post-apply: {', '.join(requested)}\n")
 
-    return payload
+    return _attach_cost(payload, cost or 0.0)
 
 
 def log_run_outcome(log_path: str, exit_code: int) -> None:
