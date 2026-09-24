@@ -2,21 +2,20 @@
 
 > Shared handoff checkpoint for humans and AI agents. **GitHub/repository state is authoritative**; this file is a concise continuity aid, not a substitute for inspecting code, PRs, or CI. Never restart valid work because this checkpoint is stale.
 
-Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQLite + HTMX). North star: AI workflow compiler/runtime — Intent → DAG → Artifact; Mission Control must stay useful alone; Mad Scientist Lab plans and manages graphs; prefer continuing PR #2 over a third recovery PR.
+Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQLite + HTMX). North star: AI workflow compiler/runtime — Intent → DAG → Artifact. Mission Control must stay useful alone. Mad Scientist Lab plans; execution stays in Mission Control.
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T21:12:00Z
+- **Updated:** 2026-09-24T21:25:01Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `d27e6e530be2b1210a8f1aad19031705ed7a1817` — squash-merge of PR #4 onto the handoff protocol
-- **Open PRs (verified):** #1, #2, and #5, all draft. Do not merge #1 or #2. This contract PR does not merge them.
-  - PR #1 — Recover local Tank graph orchestration and repository scouting (`local-recovered`) — parts bin; draft; do not merge
-  - PR #2 — Reconstruct the Mad Scientist graph on the existing Tank schema (`cursor/tank-graph-recovery-c38e`) — preferred graph spine; draft; PR body reports the graph validator passing (reported by that PR, not re-run here); do not merge
-  - PR #5 — Freeze the Mission Control and Mad Scientist Lab contract (`cursor/mission-control-lab-contract-b9d2`) — docs-only draft for Jeffrey's review
-- **Architecture contract:** `docs/MISSION_CONTROL_LAB_CONTRACT.md` (PR #5) is the draft source of truth for Mission Control vs Mad Scientist Lab. Docs only.
-- **Merged:** PR #3 (handoff protocol) and PR #4 (STATUS reconcile after #3).
-- **Scope:** Docs-only contract. No application feature work.
-- **Next action:** Contract draft open for Jeffrey review. After accept, audit PR #2 against this contract and fill gaps from #1; then the thin vertical observability/execution slice. Implementation of app code still waits on Jeffrey accepting this contract (or explicit "build"). Do not merge #1 or #2. Do not start a third overlapping recovery PR.
+- **Canonical main (verified):** `0ff9f657e45d7f33b7bf66464ef7e6cb4f7fab85` — squash-merge of PR #5. Jeffrey accepted the Mission Control ↔ Mad Scientist Lab contract. Source of truth is `docs/MISSION_CONTROL_LAB_CONTRACT.md`. The file header still says draft; GitHub merge state wins.
+- **Open PRs (verified):** #1 and #2, both draft. Do not merge either. Do not open a third recovery PR.
+  - PR #1 — Recover local Tank graph orchestration and repository scouting (`local-recovered`, `712599406ee58761d6ea7cd7157ed7045573e53a`) — parts bin; draft; do not merge
+  - PR #2 — Reconstruct the Mad Scientist graph on the existing Tank schema (`cursor/tank-graph-recovery-c38e`, `c9695e9762d2427d7b5f31053c37d27c184445ea`) — preferred graph spine; draft; graph validator reported passing by that PR, not re-run in this audit; do not merge
+- **Audit:** `docs/PR2_CONTRACT_AUDIT.md` scores PR #2 against the contract: 8 aligned, 10 partial, 5 missing. Gap-fill comes from #1 onto the #2 line.
+- **Merged:** PR #3 (handoff protocol), PR #4 (STATUS reconcile), PR #5 (contract, `0ff9f657`).
+- **Scope:** Docs-only audit plus this handoff. No application code, no schema migration.
+- **Next action:** Jeffrey reviews `docs/PR2_CONTRACT_AUDIT.md`. Then gap-fill from #1 into the #2 line (or the thin JWT-auth vertical with the observability minimum). Lab creations still execute via Mission Control. Still no auto-merge of #1 or #2.
 
 ## Handoff protocol
 
