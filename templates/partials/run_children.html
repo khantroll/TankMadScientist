@@ -54,6 +54,10 @@
       </div>
     </div>
 
+    {% if child.error and child.status in ('failed', 'rejected') %}
+    <div class="run-card-error">{{ child.error }}</div>
+    {% endif %}
+
     <div id="run-output-{{ child.id }}"
          class="run-output-slot"
          style="display:none"

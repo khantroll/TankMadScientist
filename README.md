@@ -290,7 +290,11 @@ SQLite-only validation of graph storage, dependency scheduling, localized
 dependency context, fixer/retry attempts, circuit breakers, approval
 controls, restart sweep, and workspace ownership checks. Run
 `python scripts/validate_tester_stage_validation.py` to check that tester
-and reviewer success requires a real command exit code.
+and reviewer success requires a real command exit code. Run
+`python scripts/validate_model_call_errors.py` to check that a local-agent
+model call logs `calling model…` before the request and that a timeout,
+bad JSON response, or unexpected exception is written into the run log
+and onto the failed run card.
 
 ## Production deployment
 

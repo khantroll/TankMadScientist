@@ -77,5 +77,6 @@ include-package-data = true
     "scripts/validate_mad_scientist_graph.py",
     "scripts/validate_pattern_synthesis.py",
     "scripts/validate_provider_settings.py",
+    "scripts/validate_model_call_errors.py",
     "scripts/validate_tester_stage_validation.py",
 ]

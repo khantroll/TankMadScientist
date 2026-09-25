@@ -1213,8 +1213,24 @@ def _start_local_agent(
             payload = local_agent.prepare_run(
                 ctx, cfg, extra_system_prompt=ctx.system_prompt
             )
-        except (ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-            _write_log_line(ctx.log_path, f"[tank] error: {exc}\n")
+        except Exception as exc:
+            message = local_agent.public_error_text(exc, cfg)
+            # Model-call failures are already written as
+            # "[tank] model call failed:" before they propagate. Anything
+            # else (and a ModelCallError that never reached the log) still
+            # has to land in the run log so the card is not a silent FAILED.
+            already_logged = False
+            try:
+                with open(ctx.log_path, encoding="utf-8", errors="replace") as log_file:
+                    already_logged = bool(message) and message in log_file.read()
+            except OSError:
+                already_logged = False
+            if not already_logged:
+                if isinstance(exc, local_agent.ModelCallError):
+                    _write_log_line(ctx.log_path, f"[tank] model call failed: {message}\n")
+                else:
+                    _write_log_line(ctx.log_path, f"[tank] error: {message}\n")
+            models.update_run(ctx.run_id, error=message)
             on_finished(1)
             return
 

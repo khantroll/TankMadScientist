@@ -831,11 +831,15 @@ def _attempt_public(attempt) -> dict:
         "patch_count": 0,
     }
     status = run["status"] if run is not None else attempt["status"]
+    error = ""
+    if run is not None:
+        error = str(run["error"] or "").strip()
     return {
         "id": attempt["id"],
         "run_id": attempt["run_id"],
         "attempt_kind": attempt["attempt_kind"],
         "status": status,
+        "error": error,
         "approval": approval,
         "approval_available": bool(approval.get("approval_available")),
     }
@@ -867,6 +871,11 @@ def mission_view(mission_id: int) -> dict | None:
         )
         evaluation = evaluations.get(step["id"])
         display_status = _display_status(step, done_ids)
+        failure_reason = ""
+        for item in reversed(attempts):
+            if item.get("status") in ("failed", "rejected") and item.get("error"):
+                failure_reason = item["error"]
+                break
         if actionable is not None:
             waiting_approvals.append(actionable)
         steps.append({
@@ -878,6 +887,7 @@ def mission_view(mission_id: int) -> dict | None:
             "depends_on": dependency_names(step["id"]),
             "unresolved": _unresolved(step),
             "blocked_reason": step["blocked_reason"],
+            "failure_reason": failure_reason,
             "attempt_count": len(attempts),
             "attempts": attempts,
             "awaiting_run_id": actionable["run_id"] if actionable else None,
