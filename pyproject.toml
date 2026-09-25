@@ -79,4 +79,5 @@ include-package-data = true
     "scripts/validate_provider_settings.py",
     "scripts/validate_model_call_errors.py",
     "scripts/validate_tester_stage_validation.py",
+    "scripts/validate_pytest_invocation.py",
 ]

@@ -1253,8 +1253,8 @@ def _start_local_agent(
                     authorized_tools=auth,
                 )
                 ran = True
-                payload["tool_exit_code"] = code
-                local_agent.log_run_outcome(ctx.log_path, code)
+                payload["tool_exit_code"] = int(code)
+                local_agent.log_run_outcome(ctx.log_path, int(code))
             current = models.get_run(ctx.run_id)
             if current and current["status"] == "cancelled":
                 on_finished(1)
@@ -1270,7 +1270,7 @@ def _start_local_agent(
                     "A real test, build, or diff command must run and exit 0."
                 )
                 if ran and code != 0:
-                    error = f"Verification command exited {code}"
+                    error = local_agent.verification_failure_text(code)
                 models.update_run(
                     ctx.run_id,
                     agent_payload=json.dumps(payload),
@@ -1283,7 +1283,7 @@ def _start_local_agent(
                 ctx.run_id,
                 agent_payload=json.dumps(payload),
                 status="done" if code == 0 else "failed",
-                error=None if code == 0 else f"Verification command exited {code}",
+                error=None if code == 0 else local_agent.verification_failure_text(code),
             )
             on_finished(code)
             return

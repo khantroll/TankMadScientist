@@ -294,7 +294,11 @@ and reviewer success requires a real command exit code. Run
 `python scripts/validate_model_call_errors.py` to check that a local-agent
 model call logs `calling model…` before the request and that a timeout,
 bad JSON response, or unexpected exception is written into the run log
-and onto the failed run card.
+and onto the failed run card. Run
+`python scripts/validate_pytest_invocation.py` to check that a bare
+`pytest` / `pytest -q` command runs through `python -m pytest` (or the
+workspace `.venv` / `venv`) when pytest is not on PATH, and that a failed
+verify stores a short output snippet on the run.
 
 ## Production deployment
 

@@ -306,7 +306,7 @@ def approve_run(run_id):
             workspace["repo_path"], payload, run["log_path"],
             workspace=dict(workspace), authorized_tools=authorized,
         )
-        payload["tool_exit_code"] = code
+        payload["tool_exit_code"] = int(code)
         import mad_scientist_graph as graph
 
         attempt = graph.get_attempt_by_run(run_id)
@@ -320,10 +320,10 @@ def approve_run(run_id):
                 "A real test, build, or diff command must run and exit 0."
             )
             if code != 0:
-                error = f"Verification command exited {code}"
+                error = local_agent.verification_failure_text(code)
         else:
             status = "done" if code == 0 else "failed"
-            error = None if code == 0 else f"Verification command exited {code}"
+            error = None if code == 0 else local_agent.verification_failure_text(code)
         models.update_run(
             run_id,
             status=status,

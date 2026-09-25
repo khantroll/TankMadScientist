@@ -73,6 +73,100 @@ def _redact_configured_secrets(text: str, cfg: dict) -> str:
     return text
 
 
+_SECRET_NAME_RE = re.compile(
+    r"(?i)(?:api[_-]?key|token|secret|password|passwd|credential|authorization)"
+)
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([A-Za-z_][A-Za-z0-9_]*(?:key|token|secret|password|passwd|credential)[A-Za-z0-9_]*)"
+    r"\s*=\s*([^\s'\"]+)"
+)
+_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._\-+/=]{8,})")
+_SHELL_MISS_MARKERS = (
+    "is not recognized",
+    "command not found",
+    ": not found",
+    "no module named",
+    "no such file or directory",
+)
+_SNIPPET_MAX_CHARS = 360
+
+
+def redact_command_output(text: str) -> str:
+    """Remove secret-like values from command output before it is stored or shown."""
+    if not text:
+        return text or ""
+    redacted = _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    redacted = _BEARER_RE.sub(r"\1[redacted]", redacted)
+    for name, value in list(os.environ.items()):
+        if not _SECRET_NAME_RE.search(name):
+            continue
+        secret = (value or "").strip()
+        if len(secret) < 12 or secret == "lm-studio":
+            continue
+        if secret in redacted:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
+def _trim_snippet(text: str, max_chars: int = _SNIPPET_MAX_CHARS) -> str:
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= max_chars:
+        return collapsed
+    if max_chars <= 3:
+        return collapsed[:max_chars]
+    return collapsed[: max_chars - 3].rstrip() + "..."
+
+
+def command_output_snippet(output: str, max_chars: int = _SNIPPET_MAX_CHARS) -> str:
+    """Short, redacted stdout/stderr suitable for a failed-run card."""
+    text = redact_command_output(output or "")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return _trim_snippet(text, max_chars)
+    start = None
+    for idx, line in enumerate(lines):
+        lowered = line.lower()
+        if any(marker in lowered for marker in _SHELL_MISS_MARKERS):
+            start = idx
+            break
+    if start is not None:
+        chosen = lines[start:start + 3]
+    else:
+        chosen = []
+        total = 0
+        for line in reversed(lines):
+            if chosen and total + len(line) + 1 > max_chars:
+                break
+            chosen.append(line)
+            total += len(line) + 1
+            if len(chosen) >= 4:
+                break
+        chosen.reverse()
+    return _trim_snippet(" ".join(chosen), max_chars)
+
+
+def verification_failure_text(code: int, output: str | None = None) -> str:
+    """Run-error text for a verification command that exited non-zero."""
+    message = f"Verification command exited {int(code)}"
+    if output is None:
+        output = getattr(code, "output", "") or ""
+    snippet = command_output_snippet(output)
+    if snippet:
+        return f"{message}: {snippet}"
+    return message
+
+
+class CommandResult(int):
+    """Exit code that also carries captured command output."""
+
+    output: str
+
+    def __new__(cls, code: int, output: str = ""):
+        obj = int.__new__(cls, int(code))
+        obj.output = output or ""
+        return obj
+
+
 def _http_error_message(exc: urllib.error.HTTPError, cfg: dict) -> str:
     detail = _redact_configured_secrets(
         exc.read().decode("utf-8", errors="replace"),
@@ -462,6 +556,15 @@ def apply_patches(repo_path: str, patches: list[dict], log_path: str) -> None:
 # integer exit code (0 = success, non-zero = failure).
 # ---------------------------------------------------------------------------
 
+def _captured_streams(stdout: str, stderr: str) -> str:
+    parts = []
+    for part in (stderr, stdout):
+        text = (part or "").strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
 def _run_tests_tool(
     repo_path: str,
     post_actions: dict,
@@ -474,13 +577,13 @@ def _run_tests_tool(
     )
     if not cmd:
         _log(log_path, "[tank] no test command configured or detected — skipping tests\n")
-        return 0
+        return CommandResult(0)
     repo_error = config.check_repo_path(repo_path)
     if repo_error:
         _log(log_path, f"[tank] error: {repo_error}\n")
-        return 1
-    _log(log_path, f"[tank] running tests: {repo_context.format_test_command(cmd)}\n")
-    run_target, use_shell = repo_context.prepare_test_execution(cmd)
+        return CommandResult(1, repo_error)
+    _log(log_path, f"[tank] running tests: {repo_context.format_test_command(cmd, repo_path)}\n")
+    run_target, use_shell = repo_context.prepare_test_execution(cmd, repo_path)
     try:
         result = subprocess.run(
             run_target,
@@ -490,14 +593,21 @@ def _run_tests_tool(
             text=True,
         )
     except NotADirectoryError:
-        _log(log_path, f"[tank] error: repository path is not a valid directory: {repo_path}\n")
-        return 1
-    if result.stdout:
-        _log(log_path, result.stdout)
-    if result.stderr:
-        _log(log_path, result.stderr)
+        message = f"repository path is not a valid directory: {repo_path}"
+        _log(log_path, f"[tank] error: {message}\n")
+        return CommandResult(1, message)
+    except OSError as exc:
+        message = redact_command_output(str(exc))
+        _log(log_path, f"[tank] error: {message}\n")
+        return CommandResult(1, message)
+    redacted_out = redact_command_output(result.stdout or "")
+    redacted_err = redact_command_output(result.stderr or "")
+    if redacted_out:
+        _log(log_path, redacted_out)
+    if redacted_err:
+        _log(log_path, redacted_err)
     _log(log_path, f"[tank] test exit code: {result.returncode}\n")
-    return result.returncode
+    return CommandResult(result.returncode, _captured_streams(redacted_err, redacted_out))
 
 
 def _run_git_diff_tool(
@@ -510,8 +620,11 @@ def _run_git_diff_tool(
     _log(log_path, "[tank] running git diff\n")
     diff = git_sync.diff(repo_path)
     output = diff["stdout"] or diff["stderr"] or "(no diff)"
-    _log(log_path, output + "\n")
-    return 0 if (diff["ok"] or not diff["stderr"]) else 1
+    redacted = redact_command_output(output)
+    _log(log_path, redacted + "\n")
+    code = 0 if (diff["ok"] or not diff["stderr"]) else 1
+    detail = "" if code == 0 else redact_command_output(diff["stderr"] or diff["stdout"] or "")
+    return CommandResult(code, detail)
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +696,7 @@ def run_post_actions(
         may execute; any others requested by the model are silently skipped
         with a log notice.
     """
-    code = 0
+    code = CommandResult(0)
     any_ran = False
 
     for tool_name, tool in TOOL_REGISTRY.items():
@@ -600,7 +713,10 @@ def run_post_actions(
             workspace=workspace, profile=profile,
         )
         any_ran = True
-        code = code or result
+        result_code = int(result)
+        if int(code) == 0 and result_code != 0:
+            output = getattr(result, "output", "") or ""
+            code = result if isinstance(result, CommandResult) else CommandResult(result_code, output)
 
     if not any_ran:
         _log(log_path, "[tank] no post-apply actions requested by model\n")
