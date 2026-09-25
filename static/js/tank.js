@@ -274,7 +274,7 @@ function syncProviderKeyHint(select) {
     if (option.getAttribute("data-key-fallback") === "1") {
       text = env + " is not set. A local default is configured, so calls can still authenticate.";
     } else {
-      text = env + " is not set. This provider will fail until you set that environment variable.";
+      text = env + " is not set. Save a key on Configure AI, or set that environment variable.";
     }
   }
   hint.textContent = text;

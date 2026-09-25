@@ -176,6 +176,11 @@ def _write_yaml_doc(path: str, doc: dict) -> None:
         except OSError:
             pass
         raise
+    if os.path.abspath(path) == os.path.abspath(providers_local_path()):
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 
 def _merge_provider_docs(base: dict, overlay: dict) -> dict:
@@ -240,14 +245,42 @@ def list_providers() -> list[tuple[str, str]]:
 
 
 def provider_key_status(provider_id: str) -> dict:
-    """Report whether a provider's API key env var is set (not whether it is valid)."""
+    """Report whether a usable API key is available (not whether it is valid).
+
+    An environment variable wins when it is actually set. Otherwise a stored
+    api_key_default other than the public lm-studio dummy counts as set.
+    That stored value comes from the gitignored local overlay; the tracked
+    file is not allowed to carry a real key. The status never includes the
+    secret itself.
+    """
     cfg = _registry.get(provider_id) or {}
-    env_name = cfg.get("api_key_env")
-    if env_name:
-        key = config.read_env_secret(env_name)
-        return {"env": env_name, "set": bool(key), "length": len(key)}
-    default = (cfg.get("api_key_default") or "").strip()
-    return {"env": None, "set": bool(default), "length": len(default)}
+    env_name = str(cfg.get("api_key_env") or "").strip() or None
+    env_key = config.read_env_secret(env_name) if env_name else ""
+    stored = str(cfg.get("api_key_default") or "").strip()
+    local = bool(stored) and stored != _ALLOWED_API_KEY_DEFAULT
+    if env_key:
+        return {
+            "env": env_name,
+            "set": True,
+            "length": len(env_key),
+            "source": "env",
+            "local": local,
+        }
+    if local or (stored and not env_name):
+        return {
+            "env": env_name,
+            "set": True,
+            "length": len(stored),
+            "source": "stored",
+            "local": True,
+        }
+    return {
+        "env": env_name,
+        "set": False,
+        "length": 0,
+        "source": "",
+        "local": False,
+    }
 
 
 def default_provider_info() -> dict:
@@ -398,6 +431,8 @@ def provider_catalog() -> list[dict]:
             "is_default": provider_id == _default_provider,
             "needs_key": needs_key,
             "key_set": bool(key.get("set")),
+            "key_source": key.get("source") or "",
+            "has_local_key": bool(key.get("local")),
             "has_key_fallback": bool(fallback),
             "key_fallback_is_public": fallback == _ALLOWED_API_KEY_DEFAULT,
             "editable_type": ptype in _SAFE_PROVIDER_TYPES,
@@ -513,6 +548,76 @@ def _sanitize_tracked(cfg: dict) -> dict:
     return clean
 
 
+def _normalize_submitted_api_key(value) -> str | None:
+    """Return a key to store, or None when the stored key should be left alone.
+
+    A missing or blank field means "do not change the stored key." The
+    returned string is never logged by this helper.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "\n" in text or "\r" in text or "\x00" in text:
+        raise ProviderConfigError("API key must be a single line.")
+    if len(text) > 4096:
+        raise ProviderConfigError("API key is too long.")
+    return text
+
+
+def _value_contains_secret(value, secret: str) -> bool:
+    if isinstance(value, str):
+        return secret in value
+    if isinstance(value, dict):
+        return any(
+            (isinstance(key, str) and secret in key) or _value_contains_secret(item, secret)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_value_contains_secret(item, secret) for item in value)
+    return False
+
+
+def _refuse_secret_in_tracked(doc: dict, secret: str | None) -> None:
+    """Abort before a real key can be written into the tracked providers file."""
+    if not secret or secret == _ALLOWED_API_KEY_DEFAULT:
+        return
+    if _value_contains_secret(doc, secret):
+        raise ProviderConfigError(
+            "Refusing to save because that API key would be written to providers.yaml. "
+            "Keys are stored only in providers.local.yaml."
+        )
+
+
+def _write_local_api_key(provider_id: str, api_key: str) -> None:
+    """Persist api_key_default in the gitignored local overlay only."""
+    path = providers_local_path()
+    if not _local_file_is_distinct(path):
+        raise ProviderConfigError(
+            "Refusing to store an API key because the local providers file "
+            "is the same as the tracked providers file."
+        )
+    if os.path.exists(path):
+        doc = _read_yaml_doc(path)
+    else:
+        doc = {"providers": {}}
+    providers_map = doc.setdefault("providers", {})
+    current = providers_map.get(provider_id)
+    if current is None:
+        updated = {}
+    elif isinstance(current, dict):
+        updated = dict(current)
+    else:
+        raise ProviderConfigError(
+            f"{os.path.basename(path)} entry for {provider_id} must be a mapping."
+        )
+    updated.pop("api_key", None)
+    updated["api_key_default"] = api_key
+    providers_map[provider_id] = updated
+    _write_yaml_doc(path, doc)
+
+
 def _tracked_doc() -> tuple[str, dict]:
     path = config.PROVIDERS_FILE
     if os.path.exists(path):
@@ -528,9 +633,22 @@ def _local_doc_if_present() -> tuple[str, dict | None]:
 
 
 def update_provider(provider_id: str, changes: dict) -> None:
-    """Update non-secret fields and reload the registry."""
+    """Update provider fields, store a filled API key locally, and reload.
+
+    A blank or omitted api_key leaves any key already in providers.local.yaml
+    untouched. OpenAI-compatible and Tank-controlled providers read that key
+    from the reloaded registry, so this process does not need a restart.
+    """
     if provider_id not in _registry:
         raise ProviderConfigError(f"Unknown provider: {provider_id}")
+    submitted = dict(changes)
+    new_key = _normalize_submitted_api_key(submitted.pop("api_key", None))
+    submitted.pop("api_key_default", None)
+    current_type = (_registry.get(provider_id) or {}).get("type") or "claude_code"
+    effective_type = str(submitted.get("type") or current_type).strip() or current_type
+    if new_key and effective_type not in ("openai_compatible", "local_agent"):
+        raise ProviderConfigError("This provider type does not use an API key.")
+
     tracked_path, tracked_doc = _tracked_doc()
     local_path, local_doc = _local_doc_if_present()
     tracked_providers = tracked_doc.setdefault("providers", {})
@@ -543,17 +661,20 @@ def update_provider(provider_id: str, changes: dict) -> None:
     local_updated = None
     if in_tracked:
         tracked_updated = _sanitize_tracked(
-            _apply_changes(tracked_providers[provider_id], changes)
+            _apply_changes(tracked_providers[provider_id], submitted)
         )
     if in_local:
-        local_updated = _apply_changes(local_providers[provider_id], changes)
+        local_updated = _apply_changes(local_providers[provider_id], submitted)
     if tracked_updated is not None:
         tracked_providers[provider_id] = tracked_updated
+        _refuse_secret_in_tracked(tracked_doc, new_key)
         _write_yaml_doc(tracked_path, tracked_doc)
     if local_updated is not None and local_doc is not None:
         local_providers[provider_id] = local_updated
         local_doc["providers"] = local_providers
         _write_yaml_doc(local_path, local_doc)
+    if new_key:
+        _write_local_api_key(provider_id, new_key)
     load_providers()
 
 
@@ -564,8 +685,12 @@ def add_provider(
     model: str,
     base_url: str,
     api_key_env: str,
+    api_key: str = "",
 ) -> None:
-    """Add an OpenAI-compatible or local_agent provider to the tracked file."""
+    """Add an OpenAI-compatible or local_agent provider to the tracked file.
+
+    A filled api_key is written only to providers.local.yaml.
+    """
     provider_id = (provider_id or "").strip()
     if not _PROVIDER_ID_RE.match(provider_id):
         raise ProviderConfigError(
@@ -576,6 +701,7 @@ def add_provider(
     provider_type = (provider_type or "").strip()
     if provider_type not in _ADDABLE_PROVIDER_TYPES:
         raise ProviderConfigError("New providers must be openai_compatible or local_agent.")
+    new_key = _normalize_submitted_api_key(api_key)
     cfg = _sanitize_tracked(_apply_changes({}, {
         "type": provider_type,
         "label": label,
@@ -587,7 +713,10 @@ def add_provider(
     doc.setdefault("providers", {})[provider_id] = cfg
     if not doc.get("default_provider"):
         doc["default_provider"] = _file_default_provider or provider_id
+    _refuse_secret_in_tracked(doc, new_key)
     _write_yaml_doc(path, doc)
+    if new_key:
+        _write_local_api_key(provider_id, new_key)
     load_providers()
 
 
@@ -661,12 +790,12 @@ def probe_provider(provider_id: str) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return {"ok": True, "status": resp.status}
+            return _scrub_secret({"ok": True, "status": resp.status}, key)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        return {"ok": False, "status": exc.code, "detail": detail}
+        return _scrub_secret({"ok": False, "status": exc.code, "detail": detail}, key)
     except urllib.error.URLError as exc:
-        return {"ok": False, "detail": str(exc.reason)}
+        return _scrub_secret({"ok": False, "detail": str(exc.reason)}, key)
 
 
 def get_default_provider() -> str:
@@ -779,6 +908,17 @@ def _run_claude_code(ctx: RunContext) -> subprocess.Popen:
     )
 
 
+def _scrub_secret(result: dict, secret: str) -> dict:
+    """Remove a resolved API key from a probe payload before it is shown or logged."""
+    if not secret or secret == _ALLOWED_API_KEY_DEFAULT:
+        return result
+    cleaned = dict(result)
+    detail = cleaned.get("detail")
+    if isinstance(detail, str) and secret in detail:
+        cleaned["detail"] = detail.replace(secret, "[redacted]")
+    return cleaned
+
+
 def _openai_api_key(cfg: dict) -> str:
     env_name = cfg.get("api_key_env")
     if env_name:
@@ -793,8 +933,8 @@ def _require_api_key(cfg: dict) -> str:
     env_name = cfg.get("api_key_env", "API key env var")
     if not key:
         raise ProviderError(
-            f"{env_name} is not set. Set it in PowerShell before starting Tank, e.g. "
-            f'$env:{env_name} = "sk-or-..."'
+            f"{env_name} is not set. Save a key on Configure AI, or set "
+            f"{env_name} in the environment before starting Tank."
         )
     return key
 
