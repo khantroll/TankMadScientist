@@ -6,21 +6,26 @@ Tank / TankMadScientist is a self-hosted multi-agent command center (Flask + SQL
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T23:55:00Z
+- **Updated:** 2026-09-25T00:13:01Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified with `gh` before this branch):** `ed5bead687359679513c6523fa12200d07144978` — `STATUS: reconcile after PR #7 merge (#8)`. Gap-fill on main remains PR #7 `9f041ca3124f0f8e5c5f465eed19f042bce48a78`. If this checkpoint disagrees with GitHub, GitHub wins.
-- **Lineage on main (full merge SHAs):** handoff PR #3 `b40190f24594fd7692309a4b3f15482b333aa71d`; STATUS reconcile PR #4 `d27e6e530be2b1210a8f1aad19031705ed7a1817`; contract PR #5 `0ff9f657e45d7f33b7bf66464ef7e6cb4f7fab85`; audit PR #6 `bb2abef955507f67254f479a6a618c7db3ca827d`; gap-fill PR #7 `9f041ca3124f0f8e5c5f465eed19f042bce48a78`; STATUS reconcile PR #8 `ed5bead687359679513c6523fa12200d07144978`. Source of truth remains `docs/MISSION_CONTROL_LAB_CONTRACT.md`. `docs/PR2_CONTRACT_AUDIT.md` row 19 is the Pattern Synthesis gap this branch addresses. Lab plans; Mission Control executes.
+- **Canonical main (verified with `gh`):** `96a49f1ff710ad9e2544dd0741e789f35c8426ae`. Commit title: `Add Lab pattern synthesis with v1 crew confirmation (#9)`. Squash-merge of PR #9 from branch `cursor/pattern-synthesis-4c56`, authored by cloud agent `bc-1e54ee57-2273-5586-930a-d87b152a4c56`, merged 2026-09-25T00:08:31Z. If this checkpoint disagrees with GitHub, GitHub wins.
+- **Lineage on main (full merge SHAs):** handoff PR #3 `b40190f24594fd7692309a4b3f15482b333aa71d`; STATUS reconcile PR #4 `d27e6e530be2b1210a8f1aad19031705ed7a1817`; contract PR #5 `0ff9f657e45d7f33b7bf66464ef7e6cb4f7fab85`; audit PR #6 `bb2abef955507f67254f479a6a618c7db3ca827d`; gap-fill PR #7 `9f041ca3124f0f8e5c5f465eed19f042bce48a78`; STATUS reconcile PR #8 `ed5bead687359679513c6523fa12200d07144978`; Pattern Synthesis PR #9 `96a49f1ff710ad9e2544dd0741e789f35c8426ae`. Source of truth remains `docs/MISSION_CONTROL_LAB_CONTRACT.md`. `docs/PR2_CONTRACT_AUDIT.md` row 19 is the Pattern Synthesis gap now on main via #9. Mad Scientist Lab plans; Mission Control executes.
 - **Open drafts (verified, do not merge or close):**
   - PR #1 — parts bin (`local-recovered`, `712599406ee58761d6ea7cd7157ed7045573e53a`)
   - PR #2 — graph spine (`cursor/tank-graph-recovery-c38e`, `c9695e9762d2427d7b5f31053c37d27c184445ea`)
-- **This work:** Pattern Synthesis (contract §6) on branch `cursor/pattern-synthesis-4c56`, branched from `main` at `ed5bead`. Draft PR opening against `main`. Not a third graph-recovery line. `mad_scientist_graph.py` and the `mad_scientist_*` scheduler/DDL stay the PR #2 shape from #7, plus a `synthesis_json` column.
-- **What landed:** Lab inspects roles and crews, then reuses, adapts (narrowed prompt/tools/provider, with the change recorded), or generates. A generated crew carries name, roles, tools, provider preferences, and a rationale naming the closest rejected crew or role. It can run for the current mission immediately. **Confirm as reusable** writes it to workspace memory key `pattern_synthesis`. **Use for this mission only** leaves it off that key. Attempts are still `models.create_run` plus `mad_scientist_attempts`. Human YAML missions and crew launch are unchanged.
-- **Verified:** `scripts/validate_pattern_synthesis.py`, `scripts/validate_mad_scientist_graph.py`, and `scripts/validate_tester_stage_validation.py` passed. A local demo page showed the two confirmation buttons; confirming removed them and recorded the durable sentence.
-- **Not in this slice:** live JWT-auth dogfood in a real repo. #1 and #2 were not merged or closed.
+- Pattern Synthesis (`docs/MISSION_CONTROL_LAB_CONTRACT.md` §6, `docs/PR2_CONTRACT_AUDIT.md` row 19) is on `main` via merged PR #9. This checkpoint is not awaiting Pattern Synthesis PR review. Do not re-open that work. #1 and #2 remain open drafts; their fate is undecided. Do not start a third graph-recovery line.
+- **Now on main from #9:** Mad Scientist Lab staffs specialists and whole crews with Reuse → Adapt → Generate. A generated crew may run for the current mission immediately and becomes durable workspace memory only after **Confirm as reusable** (key `pattern_synthesis`). **Use for this mission only** leaves it off that key. Steps remain Mission Control attempts. Human YAML missions and **Launch crew** are unchanged.
+- **Still open:** live JWT-auth-style dogfood in a real repo (not run in #9). Fate of drafts #1 and #2.
 - **Next action:**
-  1. Jeffrey reviews the Pattern Synthesis draft PR. On a Lab mission card, **Confirm as reusable** or **Use for this mission only** is how a generated crew is confirmed.
-  2. **JWT-auth dogfood** — run a JWT-auth-style mission in a real repo (contract section 12). Still not executed.
-  3. **Decide the fate of drafts #1 and #2** (keep, close, or fold). Do not merge or close them until that decision.
+  1. **JWT-auth-style dogfood** in a real repo — acceptance bar for the invent path (PR #9 checklist and `docs/MISSION_CONTROL_LAB_CONTRACT.md` §12). Still not executed.
+     - Workspace points at a real repo; Mad Scientist Lab goal is JWT-auth style.
+     - The card shows reuse, or generate with a rationale naming the closest rejected crew or role.
+     - If generate, **Confirm as reusable** or **Use for this mission only**.
+     - Each step is a normal Mission Control run/attempt.
+     - Patches stop at Approve / Reject.
+     - Tester success needs a real test, build, or diff exit code.
+     - `docs/MISSION_CONTROL_LAB_CONTRACT.md` §12 also requires a multi-step graph, concurrent independent ready branches, and the attempt stack (including a retry or fixer) on the same step.
+  2. **Decide the fate of drafts #1 and #2** (keep, close as superseded, or further cherry-picks). No auto-merge. Do not merge or close them until that decision.
 
 ## Handoff protocol
 
