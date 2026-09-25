@@ -247,7 +247,7 @@ label {
   margin-bottom: 4px;
 }
 
-select, textarea, input[type=text], input[type=number] {
+select, textarea, input[type=text], input[type=number], input[type=password] {
   width: 100%;
   background: var(--panel-alt);
   border: 1px solid var(--border);

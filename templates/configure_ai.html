@@ -6,8 +6,11 @@
   <h2 style="margin:4px 0 8px;">Configure AI</h2>
   <p class="form-hint" style="margin-bottom:16px;">
     Edit models, endpoints, and the default provider without hand-editing
-    <code>providers.yaml</code>. API keys stay in environment variables.
-    Saving reloads provider config so the Model dropdowns pick it up immediately.
+    <code>providers.yaml</code>. For a provider that needs a key, paste it
+    into the API key field and click Save. Tank stores that secret only in
+    gitignored <code>providers.local.yaml</code> and reloads it immediately,
+    so you do not have to set the variable in PowerShell before every start.
+    Leave the field blank to keep a key that is already stored.
   </p>
   {% if notice %}
     <p class="form-notice">{{ notice }}</p>
@@ -110,6 +113,19 @@
                 </select>
               </div>
             {% endif %}
+            {% if row.needs_key %}
+              <div class="ai-field">
+                <label for="key-{{ row.id }}">API key</label>
+                <input type="password"
+                       name="api_key"
+                       id="key-{{ row.id }}"
+                       value=""
+                       autocomplete="new-password"
+                       spellcheck="false"
+                       placeholder="Leave blank to keep the stored key">
+                <p class="form-hint">Leave blank to keep the stored key. A filled value is saved only in <code>providers.local.yaml</code>.</p>
+              </div>
+            {% endif %}
           </div>
           {% if not row.editable_type %}
             <p class="form-hint">Type stays <code>crew</code>. Change steps from the workspace Crew Orchestrator.</p>
@@ -121,15 +137,20 @@
             API key env:
             {% if row.api_key_env %}
               <code>{{ row.api_key_env }}</code>
-              {% if row.key_set %}
-                <span class="key-ok">set</span>
-              {% else %}
-                <span class="key-missing">missing</span>
-              {% endif %}
             {% else %}
               <span class="key-missing">not named</span>
             {% endif %}
-            {% if row.has_key_fallback %}
+            {% if row.key_set %}
+              <span class="key-ok">set</span>
+              {% if row.key_source == 'env' %}
+                · from the environment{% if row.has_local_key %} (overrides the key stored locally){% endif %}
+              {% elif row.key_source == 'stored' %}
+                · stored locally (value not shown)
+              {% endif %}
+            {% elif row.api_key_env %}
+              <span class="key-missing">missing</span>
+            {% endif %}
+            {% if not row.key_set and row.has_key_fallback %}
               {% if row.key_fallback_is_public %}
                 · non-secret default <code>lm-studio</code> is used when the env var is unset
               {% else %}
@@ -141,7 +162,7 @@
           {% endif %}
         </p>
         {% if row.local_override %}
-          <p class="form-hint"><code>providers.local.yaml</code> overrides this provider on this machine. Saving writes the same non-secret edits there.</p>
+          <p class="form-hint"><code>providers.local.yaml</code> overrides this provider on this machine. Saving writes non-secret edits there and keeps a stored API key unless you enter a new one.</p>
         {% endif %}
 
         <div class="provider-actions">
@@ -194,6 +215,13 @@
           <input type="text" name="api_key_env" id="new-api-key-env"
                  placeholder="OPENROUTER_API_KEY" autocomplete="off" spellcheck="false">
         </div>
+        <div class="ai-field">
+          <label for="new-api-key">API key</label>
+          <input type="password" name="api_key" id="new-api-key"
+                 value="" autocomplete="new-password" spellcheck="false"
+                 placeholder="Optional — leave blank to set it later">
+          <p class="form-hint">Optional. Saved only in <code>providers.local.yaml</code>.</p>
+        </div>
       </div>
       <button class="btn" type="submit">Add provider</button>
     </form>
@@ -203,9 +231,21 @@
   <div class="panel">
     <h3>How to set an API key</h3>
     <p class="form-hint">
-      Tank reads the variable named by <code>api_key_env</code>. The secret is never
-      written to <code>providers.yaml</code>. Set it in the environment, then restart Tank
-      so this process sees it. <strong>Test</strong> checks that the endpoint accepts the key.
+      On each OpenAI-compatible or Tank-controlled provider, the API key field
+      is a password box. Save writes a filled value to <code>api_key_default</code>
+      in <code>providers.local.yaml</code> next to <code>providers.yaml</code>.
+      That file is gitignored. The tracked <code>providers.yaml</code> never
+      receives the secret, and this page does not show the stored value again.
+      A blank field leaves the stored key unchanged.
+    </p>
+    <p class="form-hint">
+      Save reloads provider config in this process. <strong>Test</strong> and new
+      runs then use the key. An environment variable named by <code>api_key_env</code>
+      still wins when it is actually set. You do not need to restart Tank for
+      these providers.
+    </p>
+    <p class="form-hint">
+      You can still set the variable in the environment instead of using the field:
     </p>
     <pre class="ai-key-example"># PowerShell
 $env:MISTRAL_API_KEY = "..."
@@ -214,12 +254,10 @@ $env:OPENROUTER_API_KEY = "..."
 # bash
 export MISTRAL_API_KEY="..."</pre>
     <p class="form-hint">
-      On Windows, persist a user variable from System Properties → Environment Variables.
-      Optional machine-only overrides belong in <code>providers.local.yaml</code> next to
-      <code>providers.yaml</code>. That file is gitignored. Use it for a local model or
-      base URL. A literal key does not belong in the tracked file. The only
-      <code>api_key_default</code> allowed there is <code>lm-studio</code>. If you must
-      keep a literal off-git, put <code>api_key_default</code> in <code>providers.local.yaml</code> only.
+      On Windows, persist a user variable from System Properties → Environment Variables
+      if you prefer that over the local file. <code>providers.local.yaml</code> can
+      also hold a machine-only model or base URL. The only <code>api_key_default</code>
+      allowed in the tracked <code>providers.yaml</code> is <code>lm-studio</code>.
     </p>
   </div>
 {% endblock %}

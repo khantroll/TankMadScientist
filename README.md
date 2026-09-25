@@ -159,11 +159,16 @@ For the patch-approval agent workflow, use `local_qwen`, `openrouter_agent`, or 
 Day-to-day model setup is on **Configure AI** in the top nav
 (`http://127.0.0.1:8742/config/ai`). Change a label, model, base URL, or
 the default provider there, or add an OpenAI-compatible / Tank-controlled
-provider. Save reloads the registry, so Model dropdowns pick up the change
-without a restart. Crews are still saved from the workspace Crew Orchestrator.
+provider. Paste an API key into the password field on a provider card and
+click Save. Tank writes that key only to gitignored `providers.local.yaml`
+and reloads it immediately, so you do not have to set the variable in
+PowerShell before every start. Leave the field blank to keep a key that
+is already stored. Save reloads the registry, so Test and new runs pick up
+the key without a restart. Crews are still saved from the workspace Crew
+Orchestrator.
 
-Set API keys in your environment before starting Tank. The page never writes
-the secret into `providers.yaml`:
+An environment variable named by `api_key_env` still wins when it is
+actually set. You can keep using that instead of the password field:
 
 ```powershell
 # OpenRouter
@@ -173,13 +178,13 @@ $env:OPENROUTER_API_KEY = "sk-or-..."
 $env:MISTRAL_API_KEY = "..."
 ```
 
-To persist on Windows: System Properties → Environment Variables → User → New.
+To persist an environment variable on Windows: System Properties →
+Environment Variables → User → New.
 
-Optional machine-only overrides (a different model or base URL, or an
-off-git `api_key_default`) go in `providers.local.yaml` next to
-`providers.yaml`. That file is gitignored and merged on load. The only
-literal `api_key_default` allowed in the tracked `providers.yaml` is
-`lm-studio`.
+`providers.local.yaml` next to `providers.yaml` is also where a
+machine-only model or base URL goes. It is gitignored and merged on load.
+The only literal `api_key_default` allowed in the tracked `providers.yaml`
+is `lm-studio`. Configure AI never copies a saved key into that tracked file.
 
 **Note:** `openai_compatible` providers return chat text only. `local_agent`
 providers can propose and apply file patches (with your approval) but are not

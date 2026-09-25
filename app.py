@@ -34,9 +34,20 @@ app = Flask(
 )
 
 _AI_NOTICES = {
-    "saved": "Saved. Provider config reloaded.",
+    "saved": (
+        "Saved. Provider config reloaded. Test and new runs use it without a restart."
+    ),
+    "saved_key": (
+        "Saved. Provider config reloaded. The API key is stored only in "
+        "providers.local.yaml, so Test and new runs can use it without an "
+        "environment variable or a restart."
+    ),
     "default": "Default provider saved and reloaded.",
     "added": "Provider added and reloaded.",
+    "added_key": (
+        "Provider added and reloaded. The API key is stored only in "
+        "providers.local.yaml."
+    ),
 }
 _PROVIDER_BOOL_BLOCKLIST = {"label", "model", "base_url", "api_key_env", "process", "type"}
 
@@ -71,6 +82,10 @@ def _provider_changes_from_form() -> dict:
             changes[name] = request.form.get(name, "")
     if "type" in request.form:
         changes["type"] = request.form.get("type", "").strip()
+    # Present even when blank. A blank value means "leave the stored key alone"
+    # and is never written back into the page.
+    if "api_key" in request.form:
+        changes["api_key"] = request.form.get("api_key", "")
     return changes
 
 _stop_event = threading.Event()
@@ -393,6 +408,7 @@ def set_default_ai_provider():
 @app.route("/config/ai/providers", methods=["POST"])
 def add_ai_provider():
     try:
+        submitted_key = request.form.get("api_key", "")
         providers.add_provider(
             provider_id=request.form.get("provider_id", ""),
             label=request.form.get("label", ""),
@@ -400,21 +416,26 @@ def add_ai_provider():
             model=request.form.get("model", ""),
             base_url=request.form.get("base_url", ""),
             api_key_env=request.form.get("api_key_env", ""),
+            api_key=submitted_key,
         )
         models.reload_config()
     except providers.ProviderConfigError as exc:
         return render_template("configure_ai.html", **_configure_ai_context(error=str(exc))), 400
-    return redirect(url_for("configure_ai", notice="added"))
+    notice = "added_key" if str(submitted_key or "").strip() else "added"
+    return redirect(url_for("configure_ai", notice=notice))
 
 
 @app.route("/config/ai/providers/<provider_id>", methods=["POST"])
 def save_ai_provider(provider_id):
+    changes = _provider_changes_from_form()
+    stored_key = bool(str(changes.get("api_key") or "").strip())
     try:
-        providers.update_provider(provider_id, _provider_changes_from_form())
+        providers.update_provider(provider_id, changes)
         models.reload_config()
     except providers.ProviderConfigError as exc:
         return render_template("configure_ai.html", **_configure_ai_context(error=str(exc))), 400
-    return redirect(url_for("configure_ai", notice="saved"))
+    notice = "saved_key" if stored_key else "saved"
+    return redirect(url_for("configure_ai", notice=notice))
 
 
 @app.route("/config/ai/providers/<provider_id>/probe", methods=["POST"])
@@ -932,12 +953,23 @@ def main():
     print(f"[tank] templates: {app.template_folder}")
     default = providers.get_default_provider()
     key_status = providers.provider_key_status(default)
-    if key_status.get("env"):
-        env = key_status["env"]
-        if key_status["set"]:
-            print(f"[tank] {env}: set ({key_status['length']} chars)")
+    env = key_status.get("env")
+    source = key_status.get("source")
+    if source == "env" and env:
+        print(f"[tank] {env}: set ({key_status['length']} chars)")
+    elif source == "stored":
+        if env:
+            print(
+                f"[tank] {env} is not set; using the key stored for {default} "
+                f"({key_status['length']} chars)"
+            )
         else:
-            print(f"[tank] WARNING: {env} is not set — {default} will fail")
+            print(
+                f"[tank] {default}: using a stored API key "
+                f"({key_status['length']} chars)"
+            )
+    elif env:
+        print(f"[tank] WARNING: {env} is not set — {default} will fail")
     probe = providers.probe_provider(default)
     if probe.get("ok"):
         print(f"[tank] {default}: API auth OK")

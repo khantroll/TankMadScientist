@@ -52,17 +52,36 @@ def _require_api_key(cfg: dict, provider_id: str) -> str:
     env_name = cfg.get("api_key_env", "API key env var")
     if not key:
         raise ValueError(
-            f"{env_name} is not set. Set it in PowerShell before starting Tank, e.g. "
-            f'$env:{env_name} = "sk-or-..."'
+            f"{env_name} is not set. Save a key on Configure AI, or set "
+            f"{env_name} in the environment before starting Tank."
         )
     return key
 
 
+def _redact_configured_secrets(text: str, cfg: dict) -> str:
+    """Keep a resolved API key out of log lines and error text."""
+    if not text:
+        return text
+    secrets = []
+    env_name = cfg.get("api_key_env")
+    if env_name:
+        secrets.append(config.read_env_secret(env_name))
+    secrets.append(str(cfg.get("api_key_default") or "").strip())
+    for secret in secrets:
+        if secret and secret != "lm-studio" and secret in text:
+            text = text.replace(secret, "[redacted]")
+    return text
+
+
 def _http_error_message(exc: urllib.error.HTTPError, cfg: dict) -> str:
-    detail = exc.read().decode("utf-8", errors="replace")
+    detail = _redact_configured_secrets(
+        exc.read().decode("utf-8", errors="replace"),
+        cfg,
+    )
     if exc.code == 401:
         env_name = cfg.get("api_key_env", "API key env var")
         key = config.read_env_secret(env_name) if env_name else ""
+        stored = str(cfg.get("api_key_default") or "").strip()
         if key:
             return (
                 f"HTTP 401 Unauthorized from {cfg.get('base_url', 'API')}. "
@@ -71,9 +90,16 @@ def _http_error_message(exc: urllib.error.HTTPError, cfg: dict) -> str:
                 "Create a new key at https://console.mistral.ai/api-keys/ "
                 f"API response: {detail}"
             )
+        if stored and stored != "lm-studio":
+            return (
+                f"HTTP 401 Unauthorized from {cfg.get('base_url', 'API')}. "
+                f"The key stored for this provider was rejected ({len(stored)} chars). "
+                "Save a new key on Configure AI, or set "
+                f"{env_name}. API response: {detail}"
+            )
         return (
             f"HTTP 401 Unauthorized from {cfg.get('base_url', 'API')}. "
-            f"Set {env_name} in the same terminal before starting Tank. "
+            f"Save a key on Configure AI, or set {env_name} before starting Tank. "
             f"API response: {detail}"
         )
     return f"HTTP {exc.code}: {detail}"
