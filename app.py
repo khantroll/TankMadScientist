@@ -22,6 +22,7 @@ import mad_scientist
 import mad_scientist_graph
 import mission
 import models
+import pattern_synthesis
 import providers
 import scheduler
 import session_manager
@@ -222,6 +223,7 @@ def _mission_list_context(ws):
                 "mission": m,
                 "runs": models.list_mission_runs(m["id"]),
                 "graph": mad_scientist_graph.mission_view(m["id"]),
+                "synthesis": pattern_synthesis.public_view(m["id"]),
             }
             for m in missions
         ],
@@ -351,6 +353,7 @@ def workspace_detail(slug):
         repo_error=config.check_repo_path(ws["repo_path"]),
         tank_version=config.TANK_VERSION,
         crew_provider_ids=_crew_provider_ids(),
+        pattern_catalog=pattern_synthesis.catalog_preview(ws["id"]),
         **_mission_list_context(ws),
     )
 
@@ -672,6 +675,31 @@ def start_mad_scientist(slug):
         resp.headers["HX-Reswap"] = "innerHTML"
         return resp
 
+    resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
+@app.route(
+    "/workspaces/<slug>/mad-scientist/<int:mission_id>/crew-confirmation",
+    methods=["POST"],
+)
+def confirm_generated_crew(slug, mission_id):
+    """Promote a generated crew into workspace memory, or keep it on this mission."""
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    graph_mission = models.get_mad_scientist_mission_for_mission(mission_id)
+    if graph_mission is None or graph_mission["workspace_id"] != ws["id"]:
+        return "Mad Scientist mission not found for this workspace", 404
+    decision = (request.form.get("decision") or "").strip()
+    try:
+        pattern_synthesis.set_crew_confirmation(mission_id, ws["id"], decision)
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
     resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
     resp.headers["HX-Trigger"] = "runRefresh"
     return resp

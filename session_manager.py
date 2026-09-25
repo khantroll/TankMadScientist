@@ -26,6 +26,36 @@ _active_lock = threading.Lock()
 _active_runs: dict[int, dict] = {}
 
 
+_PERSONA_OVERRIDE_KEYS = ("goal", "backstory", "tools", "system_prompt")
+
+
+def merge_persona_override(role_dict: dict | None, raw: str | None) -> dict:
+    """Apply a per-step persona on top of a saved role.
+
+    Goal, backstory, tools, and system_prompt are replaced only when the
+    override has a non-empty value. Human crew launches that set a subset
+    of those fields keep the previous behavior.
+    """
+    merged = dict(role_dict or {})
+    if not raw:
+        return merged
+    try:
+        overrides = json.loads(raw)
+    except (ValueError, TypeError):
+        return merged
+    if not isinstance(overrides, dict):
+        return merged
+    for key in _PERSONA_OVERRIDE_KEYS:
+        value = overrides.get(key)
+        if value is None:
+            continue
+        text = value if isinstance(value, str) else str(value)
+        text = text.strip()
+        if text:
+            merged[key] = text
+    return merged
+
+
 def _register_active_run(run_id: int, cancel_event: threading.Event) -> None:
     with _active_lock:
         _active_runs[run_id] = {"cancel": cancel_event, "proc": None}
@@ -151,21 +181,11 @@ def launch_run(run_id):
     # the GUI builder can reshape goal / backstory / tools on a per-step basis.
     # prompt_library.compose_system_prompt reads these keys directly from the
     # dict, so no other files need to change.
-    role_dict: dict = dict(role) if role else {}
-    _persona_raw: str | None = None
     try:
-        _persona_raw = run["persona_override"]
+        persona_raw = run["persona_override"]
     except (IndexError, KeyError):
-        pass
-    if _persona_raw:
-        try:
-            _ov = json.loads(_persona_raw)
-            for _k in ("goal", "backstory", "tools"):
-                _v = (_ov.get(_k) or "").strip()
-                if _v:
-                    role_dict[_k] = _v
-        except (ValueError, TypeError):
-            pass
+        persona_raw = None
+    role_dict = merge_persona_override(dict(role) if role else {}, persona_raw)
 
     ctx = RunContext(
         run_id=run_id,
@@ -274,21 +294,11 @@ def approve_run(run_id):
     # have role_id=NULL but carry custom tools in persona_override — correctly
     # restrict (or leave unrestricted) the tool authorization during apply.
     role = models.get_role_by_id(run["role_id"])
-    role_dict: dict = dict(role) if role else {}
-    _persona_raw: str | None = None
     try:
-        _persona_raw = run["persona_override"]
+        persona_raw = run["persona_override"]
     except (IndexError, KeyError):
-        pass
-    if _persona_raw:
-        try:
-            _ov = json.loads(_persona_raw)
-            for _k in ("goal", "backstory", "tools"):
-                _v = (_ov.get(_k) or "").strip()
-                if _v:
-                    role_dict[_k] = _v
-        except (ValueError, TypeError):
-            pass
+        persona_raw = None
+    role_dict = merge_persona_override(dict(role) if role else {}, persona_raw)
 
     authorized = local_agent._authorized_tools(role_dict or None)
     try:

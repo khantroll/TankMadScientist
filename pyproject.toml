@@ -33,6 +33,7 @@ py-modules = [
     "models",
     "orchestrator",
     "output_quality",
+    "pattern_synthesis",
     "prompt_library",
     "providers",
     "repo_context",
@@ -71,5 +72,6 @@ include-package-data = true
 "share/tank/static/js" = ["static/js/htmx.min.js", "static/js/tank.js"]
 "share/tank/scripts" = [
     "scripts/validate_mad_scientist_graph.py",
+    "scripts/validate_pattern_synthesis.py",
     "scripts/validate_tester_stage_validation.py",
 ]

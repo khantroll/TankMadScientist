@@ -188,6 +188,25 @@ def get_provider_type(provider_id: str | None) -> str | None:
     return cfg.get("type") if cfg else None
 
 
+def list_crew_providers() -> list[dict]:
+    """Return configured crew providers. This only reads the registry."""
+    crews = []
+    for pid, cfg in _registry.items():
+        if (cfg or {}).get("type") != "crew":
+            continue
+        agents = []
+        for agent in cfg.get("agents") or []:
+            if isinstance(agent, dict):
+                agents.append(dict(agent))
+        crews.append({
+            "id": pid,
+            "label": cfg.get("label") or pid,
+            "process": cfg.get("process") or "sequential",
+            "agents": agents,
+        })
+    return crews
+
+
 def _append_log(log_path: str, text: str):
     """Append text to a log without forcing newlines (for streamed tokens)."""
     if not text:

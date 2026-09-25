@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS mad_scientist_missions (
     token_cap INTEGER,
     tokens_used INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER,
+    synthesis_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -216,6 +217,7 @@ def _migrate_db(conn):
         ("mad_scientist_attempts", "tokens", "INTEGER"),
         ("mad_scientist_attempts", "patch_hash", "TEXT"),
         ("mad_scientist_attempts", "error_hash", "TEXT"),
+        ("mad_scientist_missions", "synthesis_json", "TEXT"),
     ]
     for table, column, col_type in migrations:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import config
 import mad_scientist_graph as graph
 import models
+import pattern_synthesis
 import repo_context
 
 TEMPLATE_ID = "mad_scientist"
@@ -319,20 +320,59 @@ def _fixer_step(failed_step: dict | None, failed_run, attempt: int, max_loops: i
     }
 
 
+def _attempt_staffing(workspace, mission, step: dict) -> tuple[int | None, str | None, str | None]:
+    """Role, provider, and persona for one Mission Control attempt.
+
+    Lab staffing is read from the mission synthesis record. The run itself
+    is still created with models.create_run.
+    """
+    provider = step.get("provider") or mission["provider"]
+    binding = pattern_synthesis.binding_for_step(mission["id"], step)
+    if binding is None:
+        role = models.get_role_by_slug(workspace["id"], role_slug_for_step(step))
+        return (role["id"] if role else None, provider, None)
+    if binding.get("provider"):
+        provider = binding["provider"]
+    role_id = None
+    if binding.get("use_saved_role"):
+        role = models.get_role_by_slug(
+            workspace["id"], binding.get("slug") or role_slug_for_step(step)
+        )
+        role_id = role["id"] if role else None
+    return role_id, provider, binding.get("persona_override")
+
+
 def _create_child_run(workspace, mission, step: dict, parent_run_id: int | None) -> int:
     task = _step_task(mission["goal"], step, _completed_step_names(mission))
-    provider = step.get("provider") or mission["provider"]
-    role = models.get_role_by_slug(workspace["id"], role_slug_for_step(step))
+    role_id, provider, persona = _attempt_staffing(workspace, mission, step)
     return models.create_run(
         workspace["id"],
-        role["id"] if role else None,
+        role_id,
         task,
         provider=provider,
         parent_run_id=parent_run_id,
         mission_id=mission["id"],
         stage_name=step["name"],
+        persona_override=persona,
         crew_run_id=mission["parent_run_id"],
     )
+
+
+def _log_pattern_synthesis(mission, synthesis: dict) -> None:
+    crew = (synthesis or {}).get("crew") or {}
+    action = crew.get("action")
+    if action in (None, "", "none"):
+        return
+    _append_parent_log(
+        mission,
+        "[tank] pattern synthesis "
+        f"{action} crew '{crew.get('name')}' "
+        f"confirmation={crew.get('confirmation')}",
+    )
+    if crew.get("rationale"):
+        _append_parent_log(mission, f"[tank] pattern synthesis rationale: {crew['rationale']}")
+    for change in crew.get("changes") or []:
+        _append_parent_log(mission, f"[tank] pattern synthesis change: {change}")
 
 
 def role_slug_for_step(step: dict) -> str:
@@ -713,6 +753,8 @@ def _advance_mission_locked(run_id: int) -> bool:
                 mission,
                 f"[tank] plan step: {step['name']} role={step['role']} provider={step.get('provider')}",
             )
+        if plan.get("steps"):
+            _log_pattern_synthesis(mission, pattern_synthesis.bind_plan(workspace, mission, plan))
         queued = _schedule_ready_steps(workspace, mission, plan, fallback_run_id=run_id)
         if not queued:
             if _planned_steps_done(plan, mission):
@@ -838,16 +880,16 @@ def _create_step_attempt(
         task = (
             f"{task}\n\nLocalized context from all direct dependency steps:\n{context}"
         )
-    provider = step.get("provider") or mission["provider"]
-    role = models.get_role_by_slug(workspace["id"], role_slug_for_step(step))
+    role_id, provider, persona = _attempt_staffing(workspace, mission, step)
     run_id = models.create_run(
         workspace["id"],
-        role["id"] if role else None,
+        role_id,
         task,
         provider=provider,
         parent_run_id=parent_run_id,
         mission_id=mission["id"],
         stage_name=step["name"],
+        persona_override=persona,
         crew_run_id=mission["parent_run_id"],
     )
     graph.record_attempt(step_row["id"], run_id, kind)
@@ -1140,6 +1182,8 @@ def _advance_graph_locked(run, mission) -> bool:
                 mission, plan, run, note="Scout produced no execution steps"
             )
             return True
+        mission = models.get_mission(mission["id"])
+        _log_pattern_synthesis(mission, pattern_synthesis.bind_plan(workspace, mission, plan))
         return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
 
     if kind == "fixer":

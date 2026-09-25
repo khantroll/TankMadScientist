@@ -94,7 +94,27 @@
             </div>
           </div>
 
-          <p class="form-hint">Tank starts with a scout, stores the plan as a durable step graph, then queues every ready step whose dependencies are done. File changes still wait for approval. Each step gets the attempt budget above (default 3), including the first run, fixer, and retry. Leave spend blank to use the $5 mission cap. A 500,000 token cap is stored too, and it stops new attempts only after a provider reports token usage.</p>
+          <p class="form-hint">Tank starts with a scout, stores the plan as a durable step graph, then queues every ready step whose dependencies are done. Lab staffs that plan by reusing a fitting role or crew, adapting one, or generating a new crew. A generated crew can run for this mission immediately. It becomes a reusable default only after you confirm it on the mission card. File changes still wait for approval. Each step gets the attempt budget above (default 3), including the first run, fixer, and retry. Leave spend blank to use the $5 mission cap. A 500,000 token cap is stored too, and it stops new attempts only after a provider reports token usage.</p>
+          <p class="form-hint">
+            Reuse candidates Lab will inspect:
+            {% if pattern_catalog.crews %}
+              crews
+              {% for crew in pattern_catalog.crews %}
+                {{ crew.name }} ({{ crew.roles | join(', ') }}){% if not loop.last %}; {% endif %}
+              {% endfor %}
+            {% else %}
+              no saved crews
+            {% endif %}
+            ·
+            {% if pattern_catalog.roles %}
+              roles
+              {% for role in pattern_catalog.roles %}
+                {{ role.name }}{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            {% else %}
+              no saved roles
+            {% endif %}
+          </p>
           <button class="btn" type="submit">Start Mad Scientist Mission</button>
         </form>
         <div id="mad-scientist-error"></div>
