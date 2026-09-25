@@ -147,6 +147,9 @@
           {% if step.blocked_reason %}
             <div class="graph-block-reason">{{ step.blocked_reason }}</div>
           {% endif %}
+          {% if step.failure_reason %}
+            <div class="graph-block-reason">{{ step.failure_reason }}</div>
+          {% endif %}
           {% if step.attempts %}
             <div class="graph-attempt-stack">
               {% for attempt in step.attempts %}

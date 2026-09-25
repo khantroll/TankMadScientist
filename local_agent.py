@@ -147,11 +147,84 @@ def _attach_usage(payload: dict, cost: float, tokens: int | None = None) -> dict
     return payload
 
 
+class ModelCallError(ValueError):
+    """The post-context chat/completions call failed.
+
+    The message is already redacted and safe to write to the run log and card.
+    """
+
+
+def _clip_text(text: str, limit: int) -> str:
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1] + "…"
+
+
+def public_error_text(exc: BaseException, cfg: dict | None = None, limit: int = 500) -> str:
+    """Redact secrets and collapse a failure into one card-sized line."""
+    text = str(exc).strip() or type(exc).__name__
+    if cfg:
+        text = _redact_configured_secrets(text, cfg)
+    text = _clip_text(text, limit)
+    return text or type(exc).__name__
+
+
+def _endpoint_summary(cfg: dict) -> str:
+    model = cfg.get("model") or "(no model)"
+    base_url = str(cfg.get("base_url") or "http://127.0.0.1:1234/v1").rstrip("/")
+    label = str(cfg.get("label") or "").strip()
+    parts = [f"model={model}", f"endpoint={base_url}"]
+    if label:
+        parts.insert(0, label)
+    return _redact_configured_secrets(" ".join(parts), cfg)
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, TimeoutError):
+        return True
+    text = str(reason if reason is not None else exc).lower()
+    return "timed out" in text or "timeout" in text
+
+
+def _chat_completion_content(raw_body: str) -> tuple[dict, str]:
+    text = (raw_body or "").strip()
+    if not text:
+        raise ValueError("model returned an empty body")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        snippet = text[:180]
+        raise ValueError(f"model returned invalid JSON ({exc}): {snippet!r}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("model returned JSON that is not an object")
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ValueError("model returned JSON with no choices")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise ValueError("model returned JSON with no message")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("model returned an empty message")
+    return payload, content
+
+
+def _raise_model_call_failed(log_path: str | None, cfg: dict, message: str) -> None:
+    safe = public_error_text(ValueError(message), cfg, limit=1500)
+    _log(log_path, f"[tank] model call failed: {safe}\n")
+    raise ModelCallError(safe)
+
+
 def _call_chat_model(
     cfg: dict,
     system_prompt: str,
     user_message: str,
     json_mode: bool | None = None,
+    log_path: str | None = None,
 ) -> tuple[str, float | None, int | None]:
     base_url = cfg.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/")
     model = cfg.get("model")
@@ -182,17 +255,38 @@ def _call_chat_model(
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
     )
+    _log(log_path, f"[tank] calling model… {_endpoint_summary(cfg)}\n")
+    timeout = cfg.get("timeout", 600)
     try:
-        with urllib.request.urlopen(req, timeout=cfg.get("timeout", 600)) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw_body = resp.read().decode("utf-8", errors="replace")
+        payload, content = _chat_completion_content(raw_body)
     except urllib.error.HTTPError as exc:
-        raise ValueError(_http_error_message(exc, cfg)) from exc
+        _raise_model_call_failed(log_path, cfg, _http_error_message(exc, cfg))
+    except urllib.error.URLError as exc:
+        if _is_timeout(exc):
+            _raise_model_call_failed(
+                log_path, cfg, f"timed out after {timeout}s contacting {base_url}"
+            )
+        _raise_model_call_failed(
+            log_path, cfg, f"connection error contacting {base_url}: {exc.reason}"
+        )
+    except TimeoutError:
+        _raise_model_call_failed(
+            log_path, cfg, f"timed out after {timeout}s contacting {base_url}"
+        )
+    except OSError as exc:
+        _raise_model_call_failed(
+            log_path, cfg, f"connection error contacting {base_url}: {exc}"
+        )
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        _raise_model_call_failed(log_path, cfg, str(exc))
+    except Exception as exc:
+        _raise_model_call_failed(
+            log_path, cfg, f"unexpected {type(exc).__name__}: {exc}"
+        )
     usage = payload.get("usage")
-    return (
-        payload["choices"][0]["message"]["content"],
-        _usage_cost_usd(usage),
-        _usage_tokens(usage),
-    )
+    return content, _usage_cost_usd(usage), _usage_tokens(usage)
 
 
 def _extract_json(text: str) -> dict:
@@ -551,7 +645,7 @@ def _prepare_analysis_run(
     cost = 0.0
     tokens = None
     raw, call_cost, call_tokens = _call_chat_model(
-        cfg, system_prompt, user_message, json_mode=False
+        cfg, system_prompt, user_message, json_mode=False, log_path=ctx.log_path
     )
     cost = _add_cost(cost, call_cost)
     if call_tokens is not None:
@@ -564,6 +658,7 @@ def _prepare_analysis_run(
             system_prompt,
             user_message + "\n\n" + output_quality.RETRY_NUDGE,
             json_mode=False,
+            log_path=ctx.log_path,
         )
         cost = _add_cost(cost, call_cost)
         if call_tokens is not None:
@@ -627,7 +722,9 @@ def prepare_run(ctx, cfg: dict, extra_system_prompt: str | None = None) -> dict:
         project_profile=profile,
         workspace_test_command=ctx.workspace.get("test_command"),
     )
-    raw, cost, tokens = _call_chat_model(cfg, system_prompt, user_message)
+    raw, cost, tokens = _call_chat_model(
+        cfg, system_prompt, user_message, log_path=ctx.log_path
+    )
     _log(ctx.log_path, "[tank] model response received\n")
     mode = verification_mode(ctx.stage_name, getattr(ctx, "role", None))
 

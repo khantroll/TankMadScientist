@@ -90,6 +90,10 @@
       </div>
     </div>
 
+    {% if run.error and run.status in ('failed', 'rejected') %}
+    <div class="run-card-error">{{ run.error }}</div>
+    {% endif %}
+
     {% if is_crew %}
     <div id="crew-children-{{ run.id }}"
          class="crew-children"

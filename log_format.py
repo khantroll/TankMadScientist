@@ -179,6 +179,23 @@ def _format_claude_stream_json(meta: list[str], body: str) -> str:
     return _format_meta(meta) + f'<pre class="run-code">{_esc(body)}</pre>'
 
 
+def _logged_failure_note(raw: str) -> str:
+    """Put the model-call (or other) failure above the file list in the log panel."""
+    detail = ""
+    for line in raw.splitlines():
+        if "[tank] model call failed:" in line:
+            detail = line.split("[tank] model call failed:", 1)[1].strip()
+            break
+    if not detail:
+        for line in raw.splitlines():
+            if line.startswith("[tank] error:"):
+                detail = line.split("[tank] error:", 1)[1].strip()
+                break
+    if not detail:
+        return ""
+    return f'<p class="run-outcome-note">{_esc(detail)}</p>'
+
+
 def _outcome_note(run, raw: str) -> str:
     """Clarify failed runs where the agent workflow completed but checks did not pass."""
     if run["status"] != "failed":
@@ -207,7 +224,7 @@ def format_run_output(run, raw: str) -> str:
     meta, body = _split_meta_body(raw)
     provider_id = run["provider"]
     ptype = providers.get_provider_type(provider_id) if provider_id else None
-    note = _outcome_note(run, raw)
+    note = _logged_failure_note(raw) + _outcome_note(run, raw)
 
     if ptype == "openai_compatible":
         return note + _format_advisory(meta, body)

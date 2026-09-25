@@ -512,6 +512,14 @@ textarea { font-family: var(--font-mono); min-height: 70px; resize: vertical; }
   font-size: 12px;
 }
 
+.run-card-error {
+  padding: 4px 10px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--red);
+  word-break: break-word;
+}
+
 .pattern-synthesis {
   margin: 8px 0;
   padding: 8px 10px;
