@@ -46,11 +46,8 @@
 
       <div class="crew-step-field">
         <label class="crew-step-field-label">Provider</label>
-        <select name="agent_providers[]" class="crew-step-select" required>
-          {% for pid, lbl in leaf_providers %}
-          <option value="{{ pid }}">{{ lbl }}</option>
-          {% endfor %}
-        </select>
+        {% from "partials/provider_select.html" import provider_select %}
+        {{ provider_select('agent_providers[]', provider_groups_leaf, css_class='crew-step-select', required=true) }}
       </div>
 
     </div>{# /.crew-step-selects #}

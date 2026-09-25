@@ -97,7 +97,7 @@ HOST = os.environ.get("TANK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("TANK_PORT", "8742"))
 
 # Bump when UI or API behavior changes — shown in the dashboard footer.
-TANK_VERSION = "0.4.0"
+TANK_VERSION = "0.4.1"
 
 # How many lines of a run's log to show in the live output panel.
 LOG_TAIL_LINES = int(os.environ.get("TANK_LOG_TAIL_LINES", "200"))

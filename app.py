@@ -33,6 +33,46 @@ app = Flask(
     static_folder=config.share_subdir("static"),
 )
 
+_AI_NOTICES = {
+    "saved": "Saved. Provider config reloaded.",
+    "default": "Default provider saved and reloaded.",
+    "added": "Provider added and reloaded.",
+}
+_PROVIDER_BOOL_BLOCKLIST = {"label", "model", "base_url", "api_key_env", "process", "type"}
+
+
+@app.context_processor
+def _provider_picker_context():
+    """Grouped Model options for every template, including HTMX fragments."""
+    return {
+        "provider_groups_all": providers.grouped_for_ui(include_crews=True),
+        "provider_groups_leaf": providers.grouped_for_ui(include_crews=False),
+    }
+
+
+def _configure_ai_context(error=None):
+    notice_code = "" if error else request.args.get("notice", "")
+    return {
+        "catalog": providers.provider_catalog(),
+        "default_info": providers.default_provider_info(),
+        "notice": _AI_NOTICES.get(notice_code, ""),
+        "error": error,
+        "tank_version": config.TANK_VERSION,
+    }
+
+
+def _provider_changes_from_form() -> dict:
+    bool_names = set(request.form.getlist("bool_shown")) - _PROVIDER_BOOL_BLOCKLIST
+    changes = {}
+    for name in request.form.getlist("shown"):
+        if name in bool_names:
+            changes[name] = request.form.get(name) == "1"
+        else:
+            changes[name] = request.form.get(name, "")
+    if "type" in request.form:
+        changes["type"] = request.form.get("type", "").strip()
+    return changes
+
 _stop_event = threading.Event()
 
 
@@ -246,6 +286,7 @@ def api_version():
             "mad_scientist",
             "mad_scientist_graph",
             "restart_sweep",
+            "configure_ai",
         ],
         "default_provider": default,
         "provider_keys": {
@@ -332,6 +373,58 @@ def reload_config():
     models.reload_config()
     scheduler.reload_jobs()
     return redirect(url_for("dashboard"))
+
+
+@app.route("/config/ai")
+def configure_ai():
+    return render_template("configure_ai.html", **_configure_ai_context())
+
+
+@app.route("/config/ai/default", methods=["POST"])
+def set_default_ai_provider():
+    try:
+        providers.set_default_provider(request.form.get("provider_id", ""))
+        models.reload_config()
+    except providers.ProviderConfigError as exc:
+        return render_template("configure_ai.html", **_configure_ai_context(error=str(exc))), 400
+    return redirect(url_for("configure_ai", notice="default"))
+
+
+@app.route("/config/ai/providers", methods=["POST"])
+def add_ai_provider():
+    try:
+        providers.add_provider(
+            provider_id=request.form.get("provider_id", ""),
+            label=request.form.get("label", ""),
+            provider_type=request.form.get("type", ""),
+            model=request.form.get("model", ""),
+            base_url=request.form.get("base_url", ""),
+            api_key_env=request.form.get("api_key_env", ""),
+        )
+        models.reload_config()
+    except providers.ProviderConfigError as exc:
+        return render_template("configure_ai.html", **_configure_ai_context(error=str(exc))), 400
+    return redirect(url_for("configure_ai", notice="added"))
+
+
+@app.route("/config/ai/providers/<provider_id>", methods=["POST"])
+def save_ai_provider(provider_id):
+    try:
+        providers.update_provider(provider_id, _provider_changes_from_form())
+        models.reload_config()
+    except providers.ProviderConfigError as exc:
+        return render_template("configure_ai.html", **_configure_ai_context(error=str(exc))), 400
+    return redirect(url_for("configure_ai", notice="saved"))
+
+
+@app.route("/config/ai/providers/<provider_id>/probe", methods=["POST"])
+def probe_ai_provider(provider_id):
+    try:
+        result = providers.probe_provider(provider_id)
+    except providers.ProviderError as exc:
+        result = {"ok": False, "detail": str(exc)}
+    ok, message = providers.format_probe_result(result)
+    return render_template("partials/provider_probe.html", ok=ok, message=message)
 
 
 # ---------- workspace detail ----------
@@ -435,16 +528,9 @@ def crew_step_row():
     if workspace_id is None:
         return "workspace_id required", 400
     roles = models.list_roles(workspace_id)
-    # Only leaf (non-crew) providers are valid execution backends for a step.
-    leaf_providers = [
-        (pid, lbl)
-        for pid, lbl in providers.list_providers()
-        if providers.get_provider_type(pid) != "crew" and pid != "crew_builder"
-    ]
     return render_template(
         "partials/crew_step_row.html",
         roles=roles,
-        leaf_providers=leaf_providers,
     )
 
 

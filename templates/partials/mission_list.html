@@ -1,3 +1,4 @@
+{% from "partials/provider_select.html" import provider_select %}
 {% if resume_error %}
   <p class="form-error">{{ resume_error }}</p>
 {% endif %}
@@ -185,14 +186,7 @@
         {% endfor %}
       </select>
       <label for="resume-provider-{{ m.id }}">Provider for next stage</label>
-      <select name="provider" id="resume-provider-{{ m.id }}">
-        {% for pid, label in providers %}
-          <option value="{{ pid }}"
-            {% if pid == (m.provider or workspace.default_provider or default_provider) %}selected{% endif %}>
-            {{ label }}
-          </option>
-        {% endfor %}
-      </select>
+      {{ provider_select('provider', provider_groups_leaf, selected=(m.provider or workspace.default_provider or default_provider), select_id='resume-provider-' ~ m.id) }}
       <button class="btn btn-sm" type="submit">Resume mission</button>
     </form>
     {% endif %}
