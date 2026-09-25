@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -239,16 +240,149 @@ _POWERSHELL_CMD_RE = re.compile(
 )
 
 
-def prepare_test_execution(cmd: str) -> tuple[list[str] | str, bool]:
+_BARE_PYTEST_NAMES = {"pytest", "pytest.exe", "pytest.bat", "pytest.cmd"}
+_VENV_DIR_NAMES = (".venv", "venv")
+_VENV_PYTHON_LAYOUTS = (
+    ("Scripts", "python.exe"),
+    ("Scripts", "python"),
+    ("bin", "python"),
+    ("bin", "python3"),
+)
+
+
+def _is_bare_pytest_token(token: str) -> bool:
+    """True for `pytest`, `pytest.exe`, or `./pytest`, not a path to pytest."""
+    normalized = (token or "").replace("\\", "/")
+    if normalized.startswith("./"):
+        name = normalized[2:]
+        if "/" in name:
+            return False
+    elif "/" in normalized:
+        return False
+    else:
+        name = normalized
+    return name.lower() in _BARE_PYTEST_NAMES
+
+
+def _bare_pytest_tail(cmd: str) -> str | None:
+    """Return pytest arguments when cmd is a bare pytest invocation.
+
+    None means the command is not bare pytest. An empty string means bare
+    pytest with no arguments.
+    """
+    text = (cmd or "").strip()
+    if not text:
+        return None
+    if text[0] in "\"'":
+        quote = text[0]
+        end = text.find(quote, 1)
+        if end < 0:
+            return None
+        head = text[1:end]
+        tail = text[end + 1:].strip()
+    else:
+        parts = text.split(None, 1)
+        head = parts[0]
+        tail = parts[1].strip() if len(parts) > 1 else ""
+    if not _is_bare_pytest_token(head):
+        return None
+    return tail
+
+
+def _quote_exe(exe: str) -> str:
+    """Quote an interpreter path for the platform shell."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([exe])
+    return shlex.quote(exe)
+
+
+def _venv_python_candidates(root: Path) -> list[Path]:
+    """Prefer the native venv layout, then the other platform's layout."""
+    if sys.platform == "win32":
+        preferred_bins = {"Scripts"}
+    else:
+        preferred_bins = {"bin"}
+    native: list[Path] = []
+    other: list[Path] = []
+    for dirname in _VENV_DIR_NAMES:
+        for sub, name in _VENV_PYTHON_LAYOUTS:
+            path = root / dirname / sub / name
+            if sub in preferred_bins:
+                native.append(path)
+            else:
+                other.append(path)
+    return native + other
+
+
+def find_venv_python(repo_path: str | Path | None) -> Path | None:
+    """Return the workspace `.venv` or `venv` interpreter, when one exists."""
+    if not repo_path:
+        return None
+    root = Path(repo_path)
+    for path in _venv_python_candidates(root):
+        if path.is_file():
+            return path
+    return None
+
+
+def _module_python() -> str:
+    """A python command that can run `-m pytest` without pytest on PATH."""
+    if shutil.which("python"):
+        return "python"
+    if shutil.which("python3"):
+        return "python3"
+    if sys.platform == "win32" and shutil.which("py"):
+        return "py"
+    return _quote_exe(sys.executable)
+
+
+def _pytest_module_command(python: str, tail: str) -> str:
+    if python in {"python", "python3", "py"}:
+        quoted = python
+    else:
+        quoted = _quote_exe(python)
+    if tail:
+        return f"{quoted} -m pytest {tail}"
+    return f"{quoted} -m pytest"
+
+
+def normalize_bare_pytest_command(cmd: str, repo_path: str | None = None) -> str:
+    """Rewrite bare pytest so verification works when pytest is not on PATH.
+
+    `pytest` and `pytest -q` become `<python> -m pytest` with the same
+    arguments. A workspace `.venv` or `venv` interpreter is preferred when
+    one is present. When pytest is already on PATH and the repo has no venv,
+    the original command is kept so an existing pytest entry point still runs.
+    `python -m pytest` and every non-pytest command are returned unchanged.
+    This does not install packages into the patient repo.
+    """
+    tail = _bare_pytest_tail(cmd)
+    if tail is None:
+        return cmd
+    venv_python = find_venv_python(repo_path)
+    if venv_python is not None:
+        return _pytest_module_command(str(venv_python), tail)
+    if shutil.which("pytest"):
+        return cmd
+    return _pytest_module_command(_module_python(), tail)
+
+
+def prepare_test_execution(
+    cmd: str,
+    repo_path: str | None = None,
+) -> tuple[list[str] | str, bool]:
     """
     Return subprocess arguments for a test command.
 
-    On Windows, resolve pwsh/powershell to a full executable path and avoid
+    Bare pytest is rewritten to `python -m pytest` (or the repo venv) so
+    Windows can run it when pytest.exe is not on PATH. On Windows, pwsh and
+    powershell are resolved to a full executable path and run without
     shell=True so cmd.exe does not need pwsh on PATH.
     """
     cmd = (cmd or "").strip()
     if not cmd:
         return cmd, False
+    cmd = normalize_bare_pytest_command(cmd, repo_path)
 
     if sys.platform != "win32":
         return cmd, True
@@ -270,11 +404,13 @@ def prepare_test_execution(cmd: str) -> tuple[list[str] | str, bool]:
     return args, False
 
 
-def format_test_command(cmd: str) -> str:
+def format_test_command(cmd: str, repo_path: str | None = None) -> str:
     """Human-readable command string after platform normalization."""
-    prepared, use_shell = prepare_test_execution(cmd)
+    prepared, use_shell = prepare_test_execution(cmd, repo_path)
     if not use_shell and isinstance(prepared, list):
         return subprocess.list2cmdline(prepared)
+    if isinstance(prepared, str):
+        return prepared
     return cmd
 
 
@@ -322,7 +458,7 @@ def detect_project_profile(repo_path: str) -> dict:
     if "package.json" in markers:
         test_command = _npm_test_command(root)
     if test_command is None and ("pytest.ini" in markers or py_count > 0):
-        test_command = "pytest -q"
+        test_command = normalize_bare_pytest_command("pytest -q", str(root))
     if test_command is None and (has_pester or (ps_count > py_count and ps_count > 0)):
         test_command = suggested_pester_command()
     if test_command is None and primary_language == "go" and "go.mod" in markers:
@@ -369,22 +505,27 @@ def resolve_test_command(
     profile: dict | None = None,
 ) -> str | None:
     """Pick the test command: workspace override, then repo detection, then model."""
+    chosen = None
     if workspace and workspace.get("test_command"):
-        return workspace["test_command"]
+        chosen = str(workspace["test_command"]).strip()
+    else:
+        profile = profile or detect_project_profile(repo_path)
+        detected = profile.get("test_command")
+        if detected:
+            detected = _normalize_powershell_test_command(detected)
 
-    profile = profile or detect_project_profile(repo_path)
-    detected = profile.get("test_command")
-    if detected:
-        detected = _normalize_powershell_test_command(detected)
-
-    model_cmd = (post_actions or {}).get("test_command")
-    if model_cmd:
-        model_cmd = _normalize_powershell_test_command(model_cmd)
-        if detected and _looks_wrong_test_command(model_cmd, profile):
-            return detected
-        return model_cmd
-
-    return detected
+        model_cmd = (post_actions or {}).get("test_command")
+        if model_cmd:
+            model_cmd = _normalize_powershell_test_command(str(model_cmd).strip())
+            if detected and _looks_wrong_test_command(model_cmd, profile):
+                chosen = detected
+            else:
+                chosen = model_cmd
+        else:
+            chosen = detected
+    if not chosen:
+        return None
+    return normalize_bare_pytest_command(str(chosen).strip(), repo_path)
 
 
 def format_project_profile_section(

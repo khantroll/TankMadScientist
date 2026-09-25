@@ -510,6 +510,7 @@ textarea { font-family: var(--font-mono); min-height: 70px; resize: vertical; }
   flex-basis: 100%;
   color: var(--red);
   font-size: 12px;
+  word-break: break-word;
 }
 
 .run-card-error {
