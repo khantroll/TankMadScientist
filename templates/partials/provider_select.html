@@ -1,0 +1,28 @@
+{#
+  Grouped Model / provider dropdown.
+
+  groups: provider_groups_all (includes crews) or provider_groups_leaf.
+  A missing API key env is announced in the sibling .provider-key-hint.
+#}
+{% macro provider_select(name, groups, selected='', select_id='', css_class='', required=false, blank_label='') %}
+<select name="{{ name }}"
+        class="provider-select {{ css_class }}"
+        {% if select_id %}id="{{ select_id }}"{% endif %}
+        {% if required %}required{% endif %}>
+  {% if blank_label %}
+    <option value="">{{ blank_label }}</option>
+  {% endif %}
+  {% for group in groups %}
+    <optgroup label="{{ group.label }}">
+      {% for opt in group.options %}
+        <option value="{{ opt.id }}"
+                data-key-env="{{ opt.key_env }}"
+                data-key-missing="{{ '1' if opt.key_missing else '0' }}"
+                data-key-fallback="{{ '1' if opt.key_fallback else '0' }}"
+                {% if selected and opt.id == selected %}selected{% endif %}>{{ opt.label }}</option>
+      {% endfor %}
+    </optgroup>
+  {% endfor %}
+</select>
+<p class="form-hint provider-key-hint" hidden></p>
+{% endmacro %}

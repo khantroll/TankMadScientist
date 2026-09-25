@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/provider_select.html" import provider_select %}
 {% block title %}Tank — Dashboard{% endblock %}
 {% block content %}
   <div class="dashboard-layout">
@@ -25,15 +26,7 @@
                value="{{ form.git_remote or '' }}" placeholder="git@host:user/repo.git">
 
         <label for="ws-default-provider">Default provider (optional)</label>
-        <select name="default_provider" id="ws-default-provider">
-          <option value="">— use global default —</option>
-          {% for pid, label in providers %}
-            <option value="{{ pid }}"
-              {% if pid == form.default_provider %}selected{% endif %}>
-              {{ label }}
-            </option>
-          {% endfor %}
-        </select>
+        {{ provider_select('default_provider', provider_groups_leaf, selected=form.default_provider or '', select_id='ws-default-provider', blank_label='— use global default —') }}
 
         <button class="btn" type="submit">Create workspace</button>
       </form>

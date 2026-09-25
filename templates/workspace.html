@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/provider_select.html" import provider_select %}
 {% block title %}Tank — {{ workspace.name }}{% endblock %}
 {% block content %}
   <p style="margin-top:-6px;"><a href="{{ url_for('dashboard') }}" style="color:var(--text-muted); font-size:13px; text-decoration:none;">← Dashboard</a></p>
@@ -38,14 +39,7 @@
             {% endfor %}
           </select>
           <label for="mission_provider">Model / provider</label>
-          <select name="provider" id="mission_provider">
-            {% for pid, label in providers %}
-              <option value="{{ pid }}"
-                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
-                {{ label }}
-              </option>
-            {% endfor %}
-          </select>
+          {{ provider_select('provider', provider_groups_leaf, selected=(workspace.default_provider or default_provider), select_id='mission_provider') }}
           <p class="form-hint">Used for every stage in this mission. Pick a <em>Tank-controlled</em> agent (e.g. OpenRouter agent, Mistral agent) so build/fix stages can propose patches.</p>
           <label for="goal">Goal</label>
           <textarea name="goal" id="goal" placeholder="What should this mission accomplish end to end?" required></textarea>
@@ -61,14 +55,7 @@
               hx-target="#mission-list"
               hx-swap="innerHTML">
           <label for="mad_provider">Model / provider</label>
-          <select name="mad_provider" id="mad_provider">
-            {% for pid, label in providers %}
-              <option value="{{ pid }}"
-                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
-                {{ label }}
-              </option>
-            {% endfor %}
-          </select>
+          {{ provider_select('mad_provider', provider_groups_leaf, selected=(workspace.default_provider or default_provider), select_id='mad_provider') }}
 
           <label for="mad_goal">Goal</label>
           <textarea name="mad_goal" id="mad_goal"
@@ -135,14 +122,7 @@
             {% endfor %}
           </select>
           <label for="provider">Model / provider</label>
-          <select name="provider" id="provider">
-            {% for pid, label in providers %}
-              <option value="{{ pid }}"
-                {% if pid == (workspace.default_provider or default_provider) %}selected{% endif %}>
-                {{ label }}
-              </option>
-            {% endfor %}
-          </select>
+          {{ provider_select('provider', provider_groups_all, selected=(workspace.default_provider or default_provider), select_id='provider') }}
           <label for="parent_run_id">Continue from run</label>
           <select name="parent_run_id" id="parent_run_id">
             <option value="">— none (auto if task mentions prior run) —</option>

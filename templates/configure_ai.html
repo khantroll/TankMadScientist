@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% from "partials/provider_select.html" import provider_select %}
+{% block title %}Tank — Configure AI{% endblock %}
+{% block content %}
+  <p style="margin-top:-6px;"><a href="{{ url_for('dashboard') }}" style="color:var(--text-muted); font-size:13px; text-decoration:none;">← Dashboard</a></p>
+  <h2 style="margin:4px 0 8px;">Configure AI</h2>
+  <p class="form-hint" style="margin-bottom:16px;">
+    Edit models, endpoints, and the default provider without hand-editing
+    <code>providers.yaml</code>. API keys stay in environment variables.
+    Saving reloads provider config so the Model dropdowns pick it up immediately.
+  </p>
+  {% if notice %}
+    <p class="form-notice">{{ notice }}</p>
+  {% endif %}
+  {% if error %}
+    <p class="form-error">{{ error }}</p>
+  {% endif %}
+
+  <div class="panel">
+    <h3>Default provider</h3>
+    <form action="{{ url_for('set_default_ai_provider') }}" method="post">
+      <label for="default-provider">Used when a workspace or run does not pick one</label>
+      {{ provider_select('provider_id', provider_groups_all, selected=default_info.effective, select_id='default-provider') }}
+      <button class="btn" type="submit">Set default</button>
+    </form>
+    {% if default_info.env_override %}
+      <p class="form-hint">
+        <code>TANK_DEFAULT_PROVIDER</code> is set to <code>{{ default_info.env }}</code>,
+        so it overrides the file default (<code>{{ default_info.file }}</code>).
+        Unset that variable and restart Tank to use the provider saved here.
+      </p>
+    {% else %}
+      <p class="form-hint">Saved as <code>default_provider</code> in <code>providers.yaml</code>.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h3>Providers</h3>
+    {% for row in catalog %}
+      <article class="provider-card" id="provider-{{ row.id }}">
+        <div class="provider-card-head">
+          <div>
+            <strong>{{ row.label }}</strong>
+            <span class="provider-id">{{ row.id }}</span>
+          </div>
+          <div class="provider-badges">
+            <span class="badge">{{ row.type_label }}</span>
+            {% if row.is_default %}<span class="badge badge-default">default</span>{% endif %}
+          </div>
+        </div>
+        <p class="provider-summary">
+          {% if row.type == 'crew' %}
+            {{ row.agent_count }} step{% if row.agent_count != 1 %}s{% endif %}
+            {% if row.process %} · {{ row.process }}{% endif %}
+          {% elif row.type == 'claude_code' %}
+            Claude Code CLI
+          {% else %}
+            <code>{{ row.model or "—" }}</code>
+            · <code>{{ row.base_url or "—" }}</code>
+          {% endif %}
+        </p>
+
+        <form id="provider-form-{{ row.id }}"
+              action="{{ url_for('save_ai_provider', provider_id=row.id) }}"
+              method="post">
+          <div class="ai-fields">
+            {% for field in row.fields %}
+              <input type="hidden" name="shown" value="{{ field.name }}">
+              <div class="ai-field">
+                {% if field.kind == 'bool' %}
+                  <input type="hidden" name="bool_shown" value="{{ field.name }}">
+                  <label class="ai-check" for="fld-{{ row.id }}-{{ field.name }}">
+                    <input type="checkbox"
+                           name="{{ field.name }}"
+                           id="fld-{{ row.id }}-{{ field.name }}"
+                           value="1"
+                           {% if field.value %}checked{% endif %}>
+                    <span>{{ field.label }}</span>
+                  </label>
+                {% elif field.kind == 'int' %}
+                  <label for="fld-{{ row.id }}-{{ field.name }}">{{ field.label }}</label>
+                  <input type="number" step="1" min="0"
+                         name="{{ field.name }}"
+                         id="fld-{{ row.id }}-{{ field.name }}"
+                         value="{{ field.value }}">
+                {% elif field.kind == 'float' %}
+                  <label for="fld-{{ row.id }}-{{ field.name }}">{{ field.label }}</label>
+                  <input type="number" step="any"
+                         name="{{ field.name }}"
+                         id="fld-{{ row.id }}-{{ field.name }}"
+                         value="{{ field.value }}">
+                {% else %}
+                  <label for="fld-{{ row.id }}-{{ field.name }}">{{ field.label }}</label>
+                  <input type="text"
+                         name="{{ field.name }}"
+                         id="fld-{{ row.id }}-{{ field.name }}"
+                         value="{{ field.value }}"
+                         autocomplete="off"
+                         spellcheck="false">
+                {% endif %}
+              </div>
+            {% endfor %}
+            {% if row.editable_type %}
+              <div class="ai-field">
+                <label for="type-{{ row.id }}">Type</label>
+                <select name="type" id="type-{{ row.id }}">
+                  <option value="local_agent" {% if row.type == 'local_agent' %}selected{% endif %}>local_agent — Tank-controlled</option>
+                  <option value="openai_compatible" {% if row.type == 'openai_compatible' %}selected{% endif %}>openai_compatible — advisory / chat-only</option>
+                  <option value="claude_code" {% if row.type == 'claude_code' %}selected{% endif %}>claude_code — Claude Code CLI</option>
+                </select>
+              </div>
+            {% endif %}
+          </div>
+          {% if not row.editable_type %}
+            <p class="form-hint">Type stays <code>crew</code>. Change steps from the workspace Crew Orchestrator.</p>
+          {% endif %}
+        </form>
+
+        <p class="provider-keyline">
+          {% if row.needs_key %}
+            API key env:
+            {% if row.api_key_env %}
+              <code>{{ row.api_key_env }}</code>
+              {% if row.key_set %}
+                <span class="key-ok">set</span>
+              {% else %}
+                <span class="key-missing">missing</span>
+              {% endif %}
+            {% else %}
+              <span class="key-missing">not named</span>
+            {% endif %}
+            {% if row.has_key_fallback %}
+              {% if row.key_fallback_is_public %}
+                · non-secret default <code>lm-studio</code> is used when the env var is unset
+              {% else %}
+                · a local override supplies a key default (the value is not shown)
+              {% endif %}
+            {% endif %}
+          {% else %}
+            API key: not used by this provider type
+          {% endif %}
+        </p>
+        {% if row.local_override %}
+          <p class="form-hint"><code>providers.local.yaml</code> overrides this provider on this machine. Saving writes the same non-secret edits there.</p>
+        {% endif %}
+
+        <div class="provider-actions">
+          <button class="btn" type="submit" form="provider-form-{{ row.id }}">Save</button>
+          <button class="btn btn-quiet" type="button"
+                  hx-post="{{ url_for('probe_ai_provider', provider_id=row.id) }}"
+                  hx-target="#probe-{{ row.id }}"
+                  hx-swap="innerHTML"
+                  hx-disabled-elt="this">
+            Test
+          </button>
+        </div>
+        <div id="probe-{{ row.id }}"></div>
+      </article>
+    {% endfor %}
+  </div>
+
+  <div class="panel">
+    <h3>Add provider</h3>
+    <form action="{{ url_for('add_ai_provider') }}" method="post">
+      <div class="ai-fields">
+        <div class="ai-field">
+          <label for="new-provider-id">Id / slug</label>
+          <input type="text" name="provider_id" id="new-provider-id" required
+                 placeholder="openrouter_llama" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="ai-field">
+          <label for="new-label">Label</label>
+          <input type="text" name="label" id="new-label" required placeholder="Llama advisory">
+        </div>
+        <div class="ai-field">
+          <label for="new-type">Type</label>
+          <select name="type" id="new-type">
+            <option value="openai_compatible">openai_compatible — advisory / chat-only</option>
+            <option value="local_agent">local_agent — Tank-controlled agent</option>
+          </select>
+        </div>
+        <div class="ai-field">
+          <label for="new-model">Model</label>
+          <input type="text" name="model" id="new-model" required
+                 placeholder="meta-llama/llama-3.1-70b-instruct" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="ai-field">
+          <label for="new-base-url">Base URL</label>
+          <input type="text" name="base_url" id="new-base-url" required
+                 placeholder="https://openrouter.ai/api/v1" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="ai-field">
+          <label for="new-api-key-env">API key env var</label>
+          <input type="text" name="api_key_env" id="new-api-key-env"
+                 placeholder="OPENROUTER_API_KEY" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <button class="btn" type="submit">Add provider</button>
+    </form>
+    <p class="form-hint">Crews are still created from the workspace Crew Orchestrator.</p>
+  </div>
+
+  <div class="panel">
+    <h3>How to set an API key</h3>
+    <p class="form-hint">
+      Tank reads the variable named by <code>api_key_env</code>. The secret is never
+      written to <code>providers.yaml</code>. Set it in the environment, then restart Tank
+      so this process sees it. <strong>Test</strong> checks that the endpoint accepts the key.
+    </p>
+    <pre class="ai-key-example"># PowerShell
+$env:MISTRAL_API_KEY = "..."
+$env:OPENROUTER_API_KEY = "..."
+
+# bash
+export MISTRAL_API_KEY="..."</pre>
+    <p class="form-hint">
+      On Windows, persist a user variable from System Properties → Environment Variables.
+      Optional machine-only overrides belong in <code>providers.local.yaml</code> next to
+      <code>providers.yaml</code>. That file is gitignored. Use it for a local model or
+      base URL. A literal key does not belong in the tracked file. The only
+      <code>api_key_default</code> allowed there is <code>lm-studio</code>. If you must
+      keep a literal off-git, put <code>api_key_default</code> in <code>providers.local.yaml</code> only.
+    </p>
+  </div>
+{% endblock %}

@@ -112,6 +112,8 @@
     var target = evt.detail.target;
     if (!target) return;
 
+    if (window.syncProviderKeyHints) window.syncProviderKeyHints(target);
+
     if (isContainerTarget(target)) {
       // 0. Restore the page scroll position first (run-list only) so any
       //    layout shift from the new content doesn't move the viewport.
@@ -258,3 +260,41 @@ function toggleCrewChildren(runId) {
   container.style.display = isOpen ? "none" : "block";
   if (chevron) chevron.classList.toggle("crew-chevron--open", !isOpen);
 }
+
+/* ── 4. Provider key hints ──────────────────────────────────────────────── */
+
+function syncProviderKeyHint(select) {
+  if (!select) return;
+  var hint = select.nextElementSibling;
+  if (!hint || !hint.classList.contains("provider-key-hint")) return;
+  var option = select.options[select.selectedIndex];
+  var text = "";
+  if (option && option.getAttribute("data-key-missing") === "1") {
+    var env = option.getAttribute("data-key-env") || "The API key env var";
+    if (option.getAttribute("data-key-fallback") === "1") {
+      text = env + " is not set. A local default is configured, so calls can still authenticate.";
+    } else {
+      text = env + " is not set. This provider will fail until you set that environment variable.";
+    }
+  }
+  hint.textContent = text;
+  hint.hidden = !text;
+}
+
+function syncProviderKeyHints(root) {
+  var scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll(".provider-select").forEach(syncProviderKeyHint);
+}
+
+window.syncProviderKeyHints = syncProviderKeyHints;
+
+document.addEventListener("change", function (evt) {
+  var target = evt.target;
+  if (target && target.classList && target.classList.contains("provider-select")) {
+    syncProviderKeyHint(target);
+  }
+});
+
+document.addEventListener("DOMContentLoaded", function () {
+  syncProviderKeyHints(document);
+});

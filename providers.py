@@ -8,7 +8,9 @@ Supported provider types:
 """
 import json
 import os
+import re
 import subprocess
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -46,9 +48,54 @@ class ProviderError(Exception):
 
 _registry: dict[str, dict] = {}
 _default_provider: str = "claude_code"
+_file_default_provider: str = "claude_code"
 
 
 _ALLOWED_API_KEY_DEFAULT = "lm-studio"
+_SAFE_PROVIDER_TYPES = ("claude_code", "openai_compatible", "local_agent")
+_ADDABLE_PROVIDER_TYPES = ("openai_compatible", "local_agent")
+_PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_BOOL_FIELDS = ("include_repo_context", "json_mode")
+_INT_FIELDS = (
+    "max_context_files",
+    "max_context_files_analysis",
+    "max_file_bytes",
+    "timeout",
+)
+_FLOAT_FIELDS = ("temperature",)
+_CREW_TEXT_FIELDS = ("label", "process")
+_LEAF_TEXT_FIELDS = ("label", "model", "base_url", "api_key_env")
+_GROUP_ORDER = (
+    ("local_agent", "Tank-controlled agents"),
+    ("openai_compatible", "Advisory / chat-only"),
+    ("claude_code", "Claude Code"),
+    ("crew", "Crews"),
+)
+_TYPE_LABELS = {
+    "local_agent": "Tank-controlled agent",
+    "openai_compatible": "Advisory / chat-only",
+    "claude_code": "Claude Code",
+    "crew": "Crew",
+}
+_FIELD_LABELS = {
+    "label": "Label",
+    "model": "Model",
+    "base_url": "Base URL",
+    "api_key_env": "API key env var",
+    "include_repo_context": "Include repo context",
+    "json_mode": "JSON mode",
+    "max_context_files": "Max context files",
+    "max_context_files_analysis": "Max context files (analysis)",
+    "max_file_bytes": "Max file bytes",
+    "temperature": "Temperature",
+    "timeout": "Timeout (seconds)",
+    "process": "Process",
+}
+
+
+class ProviderConfigError(ValueError):
+    """Invalid Configure AI input. Safe to show in the page."""
 
 
 def _reject_tracked_api_key_defaults(path: str, registry: dict) -> None:
@@ -76,26 +123,110 @@ def _reject_tracked_api_key_defaults(path: str, registry: dict) -> None:
     )
 
 
+def providers_local_path() -> str:
+    """Path of the gitignored local overlay next to the tracked providers file."""
+    override = os.environ.get("TANK_PROVIDERS_LOCAL_FILE", "").strip()
+    if override:
+        return config.normalize_path(override)
+    path = config.PROVIDERS_FILE
+    root, ext = os.path.splitext(path)
+    if root.endswith(".local"):
+        return path
+    return root + ".local" + (ext or ".yaml")
+
+
+def _local_file_is_distinct(local_path: str | None = None) -> bool:
+    local_path = local_path or providers_local_path()
+    if not local_path:
+        return False
+    return os.path.abspath(local_path) != os.path.abspath(config.PROVIDERS_FILE)
+
+
+def _read_yaml_doc(path: str) -> dict:
+    with open(path, encoding="utf-8") as handle:
+        doc = yaml.safe_load(handle) or {}
+    if not isinstance(doc, dict):
+        raise ProviderConfigError(f"{os.path.basename(path)} must be a YAML mapping")
+    providers = doc.get("providers")
+    if providers is None:
+        doc["providers"] = {}
+    elif not isinstance(providers, dict):
+        raise ProviderConfigError(f"{os.path.basename(path)} providers must be a mapping")
+    return doc
+
+
+def _write_yaml_doc(path: str, doc: dict) -> None:
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".providers-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(
+                doc,
+                handle,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+                width=4096,
+            )
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _merge_provider_docs(base: dict, overlay: dict) -> dict:
+    """Overlay local provider fields and default_provider onto the tracked doc."""
+    merged = dict(base)
+    providers = dict(base.get("providers") or {})
+    for provider_id, cfg in (overlay.get("providers") or {}).items():
+        if isinstance(cfg, dict) and isinstance(providers.get(provider_id), dict):
+            combined = dict(providers[provider_id])
+            combined.update(cfg)
+            providers[provider_id] = combined
+        else:
+            providers[provider_id] = cfg
+    merged["providers"] = providers
+    if overlay.get("default_provider"):
+        merged["default_provider"] = overlay["default_provider"]
+    return merged
+
+
+def _load_local_overlay(path: str) -> dict:
+    if not _local_file_is_distinct(path) or not os.path.exists(path):
+        return {}
+    return _read_yaml_doc(path)
+
+
 def load_providers():
-    """Load provider definitions from providers.yaml (or env override)."""
-    global _registry, _default_provider
+    """Load provider definitions from providers.yaml plus providers.local.yaml."""
+    global _registry, _default_provider, _file_default_provider
     path = config.PROVIDERS_FILE
     try:
-        with open(path) as f:
-            doc = yaml.safe_load(f) or {}
+        doc = _read_yaml_doc(path)
     except FileNotFoundError:
-        _registry = {
-            "claude_code": {"type": "claude_code", "label": "Claude Code"},
+        doc = {
+            "default_provider": "claude_code",
+            "providers": {
+                "claude_code": {"type": "claude_code", "label": "Claude Code"},
+            },
         }
-        _default_provider = "claude_code"
-        return
 
     registry = doc.get("providers") or {}
     _reject_tracked_api_key_defaults(path, registry)
+    local_doc = _load_local_overlay(providers_local_path())
+    if local_doc:
+        doc = _merge_provider_docs(doc, local_doc)
+        registry = doc.get("providers") or {}
+
     _registry = registry
+    _file_default_provider = doc.get("default_provider") or "claude_code"
     _default_provider = (
         os.environ.get("TANK_DEFAULT_PROVIDER")
-        or doc.get("default_provider")
+        or _file_default_provider
         or "claude_code"
     )
 
@@ -119,10 +250,395 @@ def provider_key_status(provider_id: str) -> dict:
     return {"env": None, "set": bool(default), "length": len(default)}
 
 
+def default_provider_info() -> dict:
+    """Effective default, the file default, and whether an env var wins."""
+    env = os.environ.get("TANK_DEFAULT_PROVIDER") or ""
+    return {
+        "effective": _default_provider,
+        "file": _file_default_provider,
+        "env": env,
+        "env_override": bool(env),
+    }
+
+
+def _looks_like_secret(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return False
+    if lowered.startswith("sk-") or lowered.startswith("sk_"):
+        return True
+    return False
+
+
+def _display_label(label: str, ptype: str) -> str:
+    low = label.lower()
+    if ptype == "crew" and "crew" not in low:
+        return f"{label} · crew"
+    if ptype == "openai_compatible" and "advisory" not in low and "chat" not in low:
+        return f"{label} · advisory"
+    if ptype == "local_agent" and "agent" not in low and "tank" not in low:
+        return f"{label} · Tank-controlled"
+    if ptype == "claude_code" and "claude" not in low:
+        return f"{label} · Claude Code"
+    return label
+
+
+def _provider_option(provider_id: str, cfg: dict) -> dict:
+    ptype = cfg.get("type") or "claude_code"
+    key = provider_key_status(provider_id)
+    needs_key = ptype in ("openai_compatible", "local_agent")
+    env = key.get("env") or ""
+    fallback = bool(str(cfg.get("api_key_default") or "").strip())
+    missing = needs_key and not key.get("set")
+    return {
+        "id": provider_id,
+        "label": _display_label(cfg.get("label") or provider_id, ptype),
+        "type": ptype,
+        "key_env": env,
+        "key_missing": missing,
+        "key_fallback": bool(fallback and missing),
+    }
+
+
+def grouped_for_ui(include_crews: bool = True) -> list[dict]:
+    """Provider options grouped for Model dropdowns."""
+    buckets = {key: [] for key, _label in _GROUP_ORDER}
+    other = []
+    for provider_id, cfg in _registry.items():
+        if not isinstance(cfg, dict):
+            continue
+        ptype = cfg.get("type") or "claude_code"
+        if ptype == "crew" and not include_crews:
+            continue
+        option = _provider_option(provider_id, cfg)
+        if ptype in buckets:
+            buckets[ptype].append(option)
+        else:
+            other.append(option)
+    groups = []
+    for key, label in _GROUP_ORDER:
+        if key == "crew" and not include_crews:
+            continue
+        if buckets[key]:
+            groups.append({"id": key, "label": label, "options": buckets[key]})
+    if other:
+        groups.append({"id": "other", "label": "Other", "options": other})
+    return groups
+
+
+def _field_spec(name: str, kind: str, value) -> dict:
+    return {
+        "name": name,
+        "kind": kind,
+        "value": value,
+        "label": _FIELD_LABELS.get(name, name.replace("_", " ")),
+    }
+
+
+def _field_kind(name: str, value) -> str:
+    if name in _BOOL_FIELDS or isinstance(value, bool):
+        return "bool"
+    if name in _FLOAT_FIELDS or isinstance(value, float):
+        return "float"
+    if name in _INT_FIELDS or isinstance(value, int):
+        return "int"
+    return "text"
+
+
+def _editable_fields(cfg: dict) -> list[dict]:
+    ptype = cfg.get("type") or "claude_code"
+    if ptype == "crew":
+        return [
+            _field_spec("label", "text", cfg.get("label") or ""),
+            _field_spec("process", "text", cfg.get("process") or "sequential"),
+        ]
+    fields = [
+        _field_spec("label", "text", cfg.get("label") or ""),
+        _field_spec("model", "text", cfg.get("model") or ""),
+        _field_spec("base_url", "text", cfg.get("base_url") or ""),
+        _field_spec("api_key_env", "text", cfg.get("api_key_env") or ""),
+    ]
+    shown = {field["name"] for field in fields}
+    hidden = shown | {"type", "agents", "api_key", "api_key_default"}
+    for name, value in cfg.items():
+        if name in hidden or isinstance(value, (dict, list)):
+            continue
+        fields.append(_field_spec(name, _field_kind(name, value), value))
+    return fields
+
+
+def _local_provider_ids() -> set[str]:
+    local_doc = _load_local_overlay(providers_local_path())
+    providers = local_doc.get("providers") or {}
+    return {pid for pid, cfg in providers.items() if isinstance(cfg, dict)}
+
+
+def provider_catalog() -> list[dict]:
+    """Non-secret view of every provider for the Configure AI page."""
+    local_ids = _local_provider_ids()
+    rows = []
+    for provider_id, cfg in _registry.items():
+        if not isinstance(cfg, dict):
+            continue
+        ptype = cfg.get("type") or "claude_code"
+        key = provider_key_status(provider_id)
+        fallback = str(cfg.get("api_key_default") or "").strip()
+        needs_key = ptype in ("openai_compatible", "local_agent")
+        agents = cfg.get("agents") or []
+        rows.append({
+            "id": provider_id,
+            "type": ptype,
+            "type_label": _TYPE_LABELS.get(ptype, ptype),
+            "label": cfg.get("label") or provider_id,
+            "model": cfg.get("model") or "",
+            "base_url": cfg.get("base_url") or "",
+            "api_key_env": cfg.get("api_key_env") or "",
+            "process": cfg.get("process") or "",
+            "agent_count": len(agents) if isinstance(agents, list) else 0,
+            "is_default": provider_id == _default_provider,
+            "needs_key": needs_key,
+            "key_set": bool(key.get("set")),
+            "has_key_fallback": bool(fallback),
+            "key_fallback_is_public": fallback == _ALLOWED_API_KEY_DEFAULT,
+            "editable_type": ptype in _SAFE_PROVIDER_TYPES,
+            "local_override": provider_id in local_ids,
+            "fields": _editable_fields(cfg),
+        })
+    return rows
+
+
+def _assign_field(cfg: dict, key: str, value) -> None:
+    if key in _BOOL_FIELDS or isinstance(value, bool):
+        if isinstance(value, str):
+            cfg[key] = value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            cfg[key] = bool(value)
+        return
+    if key in _INT_FIELDS:
+        text = str(value).strip() if value is not None else ""
+        if text == "":
+            cfg.pop(key, None)
+            return
+        try:
+            number = int(text)
+        except (TypeError, ValueError):
+            raise ProviderConfigError(f"{_FIELD_LABELS.get(key, key)} must be a whole number.") from None
+        if number < 0:
+            raise ProviderConfigError(f"{_FIELD_LABELS.get(key, key)} must be zero or greater.")
+        cfg[key] = number
+        return
+    if key in _FLOAT_FIELDS:
+        text = str(value).strip() if value is not None else ""
+        if text == "":
+            cfg.pop(key, None)
+            return
+        try:
+            cfg[key] = float(text)
+        except (TypeError, ValueError):
+            raise ProviderConfigError(f"{_FIELD_LABELS.get(key, key)} must be a number.") from None
+        return
+
+    text = str(value or "").strip()
+    label = _FIELD_LABELS.get(key, key)
+    if _looks_like_secret(text):
+        raise ProviderConfigError(
+            f"{label} looks like an API key. Set the key in the environment named by api_key_env."
+        )
+    if key == "api_key_env":
+        if not text:
+            cfg.pop(key, None)
+            return
+        if not _ENV_NAME_RE.match(text):
+            raise ProviderConfigError(
+                "API key env must be an environment variable name, not the key itself."
+            )
+        cfg[key] = text
+        return
+    if key == "base_url" and text and not (
+        text.startswith("http://") or text.startswith("https://")
+    ):
+        raise ProviderConfigError("Base URL must start with http:// or https://.")
+    if key == "label" and not text:
+        raise ProviderConfigError("Label is required.")
+    if text:
+        cfg[key] = text
+    else:
+        cfg.pop(key, None)
+
+
+def _apply_changes(current: dict, changes: dict, *, creating: bool = False) -> dict:
+    cfg = dict(current or {})
+    ptype = "claude_code" if creating else (cfg.get("type") or "claude_code")
+    if creating or "type" in changes:
+        new_type = str(changes.get("type") or ptype).strip()
+        if ptype == "crew" and new_type != "crew":
+            raise ProviderConfigError(
+                "Crew providers stay type crew. Edit steps from the workspace crew builder."
+            )
+        if ptype != "crew":
+            if new_type not in _SAFE_PROVIDER_TYPES:
+                raise ProviderConfigError(f"Unsupported provider type: {new_type}")
+            cfg["type"] = new_type
+            ptype = new_type
+    if ptype == "crew":
+        allowed = set(_CREW_TEXT_FIELDS)
+    else:
+        allowed = set(_LEAF_TEXT_FIELDS) | set(_BOOL_FIELDS) | set(_INT_FIELDS) | set(_FLOAT_FIELDS)
+        for key in changes:
+            if key in cfg and key not in {"type", "agents", "api_key", "api_key_default"}:
+                allowed.add(key)
+    for key, value in changes.items():
+        if key == "type" or key not in allowed:
+            continue
+        _assign_field(cfg, key, value)
+    if not str(cfg.get("label") or "").strip():
+        raise ProviderConfigError("Label is required.")
+    if ptype in _ADDABLE_PROVIDER_TYPES:
+        if not str(cfg.get("model") or "").strip():
+            raise ProviderConfigError("Model is required for this provider type.")
+        if not str(cfg.get("base_url") or "").strip():
+            raise ProviderConfigError("Base URL is required for this provider type.")
+    if ptype == "crew" and not str(cfg.get("process") or "").strip():
+        cfg["process"] = "sequential"
+    return cfg
+
+
+def _sanitize_tracked(cfg: dict) -> dict:
+    """Drop secrets before writing the tracked providers file."""
+    clean = dict(cfg)
+    clean.pop("api_key", None)
+    default = clean.get("api_key_default")
+    if default is not None and str(default).strip() != _ALLOWED_API_KEY_DEFAULT:
+        clean.pop("api_key_default", None)
+    return clean
+
+
+def _tracked_doc() -> tuple[str, dict]:
+    path = config.PROVIDERS_FILE
+    if os.path.exists(path):
+        return path, _read_yaml_doc(path)
+    return path, {"default_provider": _file_default_provider, "providers": {}}
+
+
+def _local_doc_if_present() -> tuple[str, dict | None]:
+    path = providers_local_path()
+    if not _local_file_is_distinct(path) or not os.path.exists(path):
+        return path, None
+    return path, _read_yaml_doc(path)
+
+
+def update_provider(provider_id: str, changes: dict) -> None:
+    """Update non-secret fields and reload the registry."""
+    if provider_id not in _registry:
+        raise ProviderConfigError(f"Unknown provider: {provider_id}")
+    tracked_path, tracked_doc = _tracked_doc()
+    local_path, local_doc = _local_doc_if_present()
+    tracked_providers = tracked_doc.setdefault("providers", {})
+    local_providers = (local_doc or {}).get("providers") or {}
+    in_tracked = isinstance(tracked_providers.get(provider_id), dict)
+    in_local = isinstance(local_providers.get(provider_id), dict)
+    if not in_tracked and not in_local:
+        raise ProviderConfigError(f"Unknown provider: {provider_id}")
+    tracked_updated = None
+    local_updated = None
+    if in_tracked:
+        tracked_updated = _sanitize_tracked(
+            _apply_changes(tracked_providers[provider_id], changes)
+        )
+    if in_local:
+        local_updated = _apply_changes(local_providers[provider_id], changes)
+    if tracked_updated is not None:
+        tracked_providers[provider_id] = tracked_updated
+        _write_yaml_doc(tracked_path, tracked_doc)
+    if local_updated is not None and local_doc is not None:
+        local_providers[provider_id] = local_updated
+        local_doc["providers"] = local_providers
+        _write_yaml_doc(local_path, local_doc)
+    load_providers()
+
+
+def add_provider(
+    provider_id: str,
+    label: str,
+    provider_type: str,
+    model: str,
+    base_url: str,
+    api_key_env: str,
+) -> None:
+    """Add an OpenAI-compatible or local_agent provider to the tracked file."""
+    provider_id = (provider_id or "").strip()
+    if not _PROVIDER_ID_RE.match(provider_id):
+        raise ProviderConfigError(
+            "Id must be a lowercase slug: start with a letter, then letters, numbers, or underscores."
+        )
+    if provider_id in _registry:
+        raise ProviderConfigError(f"Provider {provider_id} already exists.")
+    provider_type = (provider_type or "").strip()
+    if provider_type not in _ADDABLE_PROVIDER_TYPES:
+        raise ProviderConfigError("New providers must be openai_compatible or local_agent.")
+    cfg = _sanitize_tracked(_apply_changes({}, {
+        "type": provider_type,
+        "label": label,
+        "model": model,
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+    }, creating=True))
+    path, doc = _tracked_doc()
+    doc.setdefault("providers", {})[provider_id] = cfg
+    if not doc.get("default_provider"):
+        doc["default_provider"] = _file_default_provider or provider_id
+    _write_yaml_doc(path, doc)
+    load_providers()
+
+
+def set_default_provider(provider_id: str) -> None:
+    """Write default_provider into the tracked file and reload."""
+    provider_id = (provider_id or "").strip()
+    if provider_id not in _registry:
+        raise ProviderConfigError(f"Unknown provider: {provider_id}")
+    path, doc = _tracked_doc()
+    doc["default_provider"] = provider_id
+    _write_yaml_doc(path, doc)
+    local_path, local_doc = _local_doc_if_present()
+    if local_doc is not None and local_doc.get("default_provider"):
+        local_doc["default_provider"] = provider_id
+        _write_yaml_doc(local_path, local_doc)
+    load_providers()
+
+
+def format_probe_result(result: dict) -> tuple[bool, str]:
+    """Turn a probe dict into a short pass/fail sentence."""
+    ok = bool(result.get("ok"))
+    detail = str(result.get("detail") or "").strip().replace("\n", " ")
+    if len(detail) > 240:
+        detail = detail[:237] + "..."
+    if ok:
+        status = result.get("status")
+        if status:
+            return True, f"Pass — endpoint responded (HTTP {status})."
+        if detail:
+            return True, f"Pass — {detail} is available."
+        return True, "Pass."
+    if " is not set" in detail:
+        env = detail.split(" is not set", 1)[0].strip()
+        return False, f"Fail — {env} is not set."
+    status = result.get("status")
+    if status and detail:
+        return False, f"Fail — HTTP {status}: {detail}"
+    if detail:
+        return False, f"Fail — {detail}"
+    return False, "Fail — probe did not succeed."
+
+
 def probe_provider(provider_id: str) -> dict:
     """Lightweight auth check against the provider API."""
     cfg = _provider_cfg(provider_id)
     ptype = cfg.get("type", "claude_code")
+    if ptype == "crew":
+        return {
+            "ok": False,
+            "detail": "Crews do not have their own endpoint. Test a leaf provider used by a step.",
+        }
     if ptype == "claude_code":
         import shutil
         found = shutil.which(config.CLAUDE_BIN)
