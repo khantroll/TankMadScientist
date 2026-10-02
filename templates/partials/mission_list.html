@@ -61,7 +61,9 @@
 
     {% if g and g.can_resume_blocked and g.resumable_steps %}
       <div class="mission-action-required mission-action-required--resume">
-        <div class="mission-action-label">BLOCKED · RESUME AVAILABLE</div>
+        <div class="mission-action-label">
+          {% if g.steps|selectattr('import_context_stuck')|list %}IMPORT CONTEXT · RESUME{% else %}BLOCKED · RESUME AVAILABLE{% endif %}
+        </div>
         {% for step in g.resumable_steps %}
           <form class="mission-resume-step"
                 hx-post="{{ url_for('resume_mad_scientist_step', slug=workspace.slug, mission_id=m.id) }}"
@@ -187,6 +189,14 @@
             <span class="mono">evaluation {{ step.evaluation.verdict }}</span>
           {% endif %}
           <span class="mono">{{ step.attempt_count }} attempt{{ 's' if step.attempt_count != 1 else '' }}</span>
+          {% if step.import_context_stuck %}
+            <div class="graph-block-reason">
+              This is an import/execution-context failure (e.g. <span class="mono">No module named 'app'</span> with
+              <span class="mono">TankSacrifice/tests</span>) — not a package to install and usually not a code patch to Approve.
+              Prefer <strong>Resume from {{ step.name }}</strong> so Tank retries with corrected pytest cwd/path/PYTHONPATH.
+              {% if step.approval_available %}Reject the fixer if you do not want that patch applied.{% endif %}
+            </div>
+          {% endif %}
           {% if step.approval_available %}
             {% for attempt in step.attempts if attempt.approval_available %}
               {% with approval=attempt.approval %}
@@ -202,7 +212,13 @@
                   hx-target="#mission-list"
                   hx-swap="innerHTML">
               <input type="hidden" name="step_id" value="{{ step.id }}">
-              <button class="btn btn-sm btn-approve" type="submit">Resume from {{ step.name }}</button>
+              <button class="btn btn-sm btn-approve" type="submit">
+                {% if step.import_context_stuck and step.display_status == 'awaiting_approval' %}
+                  Resume with fixed test context
+                {% else %}
+                  Resume from {{ step.name }}
+                {% endif %}
+              </button>
             </form>
           {% endif %}
           {% if step.blocked_reason %}
@@ -211,7 +227,7 @@
           {% if step.failure_reason %}
             <div class="graph-block-reason">{{ step.failure_reason }}</div>
           {% endif %}
-          {% if step.verification and (step.display_status in ('blocked', 'failed') or step.verification.exit_code not in (none, 0)) %}
+          {% if step.verification and (step.display_status in ('blocked', 'failed', 'awaiting_approval') or step.verification.exit_code not in (none, 0)) %}
             {% with verification=step.verification %}
               {% include "partials/verification_failure.html" %}
             {% endwith %}

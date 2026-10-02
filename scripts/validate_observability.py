@@ -662,7 +662,10 @@ def test_module_classification_and_install_gate():
         status="failed",
         agent_payload=json.dumps(app_payload),
         finished_at=models._now(),
-        error=f"Verification command exited 1: {app_err}",
+        error=(
+            "Verification command exited 2: E ModuleNotFoundError: No module named 'app' "
+            f"ERROR {REPO.name}/tests - ModuleNotFoundError: No module named 'app'"
+        ),
     )
     graph.sync_run_status(app_run)
     no_offer = dependency_recovery.attach_install_offer(app_run, str(REPO))
@@ -672,7 +675,31 @@ def test_module_classification_and_install_gate():
     check(view.get("cwd") == str(REPO), "verification view includes working directory")
     check(view.get("installable") is False, "app failure is not installable")
 
-    # Fixer context includes cwd + import guidance
+    # advance_mission must BLOCK for Resume — not queue a fixer (screenshot trap)
+    models.update_mission(mission_id, status="running", note="running")
+    graph.set_status(mission_id, "running", blocked_reason=None)
+    with models.get_db() as conn:
+        conn.execute(
+            "UPDATE mad_scientist_steps SET status='failed', blocked_reason=NULL WHERE id=?",
+            (tester["id"],),
+        )
+    before_n = len(graph.list_attempts(tester["id"]))
+    mad_scientist.advance_mission(app_run)
+    after = graph.list_attempts(tester["id"])
+    check(
+        graph.get_step(tester["id"])["status"] == graph.BLOCKED_HUMAN,
+        "import_context failure blocks for Resume instead of fixer",
+    )
+    check(len(after) == before_n, "import_context block does not add a fixer attempt")
+    check(
+        not any(
+            a["attempt_kind"] == "fixer" and int(a["run_id"]) > int(app_run)
+            for a in after
+        ),
+        "import_context failure does not auto-queue a fixer",
+    )
+
+    # Fixer context includes cwd + import guidance (when a fixer is drafted)
     fixer = mad_scientist._fixer_step(
         {"name": "Run tests", "task": "run tests", "provider": "local_qwen"},
         models.get_run(app_run),
@@ -697,7 +724,88 @@ def test_module_classification_and_install_gate():
         check("local" in str(exc).lower() or "refusing" in str(exc).lower(),
               "installation remains refused for local modules")
 
-    # UI surfaces install controls for pytest offer
+    # Screenshot case: awaiting fixer after import_context → Resume dismisses it
+    stuck_ws = make_workspace("import-stuck")
+    stuck_mid, stuck_gid, stuck_scout = open_mission(stuck_ws, "JWT import stuck")
+    scout_run = models.create_run(
+        stuck_ws, None, "scout", provider="local_qwen", mission_id=stuck_mid, stage_name="scout"
+    )
+    graph.record_attempt(stuck_scout, scout_run, "scout")
+    finish_run(scout_run)
+    seed_plan(stuck_gid)
+    stuck_tester = next(s for s in graph.list_steps(stuck_gid) if s["name"] == "Run tests")
+    for s in graph.list_steps(stuck_gid):
+        if s["id"] == stuck_tester["id"]:
+            continue
+        with models.get_db() as conn:
+            conn.execute("UPDATE mad_scientist_steps SET status='done' WHERE id=?", (s["id"],))
+    fail_run = models.create_run(
+        stuck_ws, None, "test", provider="local_qwen", mission_id=stuck_mid, stage_name="Run tests"
+    )
+    graph.record_attempt(stuck_tester["id"], fail_run, "execute")
+    models.update_run(
+        fail_run,
+        status="failed",
+        agent_payload=json.dumps({
+            "response_type": "plan",
+            "summary": "tests",
+            "plan": "",
+            "post_actions": {
+                "run_tests": True,
+                "test_command": f"python -m pytest {REPO.name}/tests -q",
+                "run_git_diff": False,
+            },
+            "tool_exit_code": 2,
+            "verification_cwd": str(REPO),
+            "verification_command_resolved": f"python -m pytest {REPO.name}/tests -q",
+        }),
+        finished_at=models._now(),
+        error=(
+            "Verification command exited 2: E ModuleNotFoundError: No module named 'app' "
+            f"ERROR {REPO.name}/tests - ModuleNotFoundError: No module named 'app'"
+        ),
+        log_path=str(Path(TMP) / "stuck-exec.log"),
+    )
+    Path(TMP, "stuck-exec.log").write_text("", encoding="utf-8")
+    graph.sync_run_status(fail_run)
+    fixer_run = models.create_run(
+        stuck_ws,
+        None,
+        "fix",
+        provider="local_qwen",
+        mission_id=stuck_mid,
+        stage_name="Run tests",
+        parent_run_id=fail_run,
+    )
+    graph.record_attempt(stuck_tester["id"], fixer_run, "fixer")
+    models.update_run(
+        fixer_run,
+        status="awaiting_approval",
+        agent_payload=json.dumps({
+            "response_type": "patch",
+            "summary": "guessed import fix",
+            "patches": [{"path": "conftest.py", "content": "import sys\n"}],
+            "post_actions": {"run_tests": False, "run_git_diff": False},
+        }),
+        log_path=str(Path(TMP) / "stuck-fixer.log"),
+    )
+    Path(TMP, "stuck-fixer.log").write_text("", encoding="utf-8")
+    graph.sync_run_status(fixer_run)
+    models.update_mission(stuck_mid, status=graph.BLOCKED_HUMAN, note="evaluation fail")
+    graph.block_mission(stuck_mid, "evaluation fail")
+
+    stuck_view = graph.mission_view(stuck_mid)
+    stuck_step = next(s for s in stuck_view["steps"] if s["id"] == stuck_tester["id"])
+    check(stuck_step.get("import_context_stuck"), "mission_view marks import_context_stuck on awaiting fixer")
+    check(stuck_step.get("can_resume"), "awaiting fixer after import_context is resumable")
+    check(stuck_view.get("can_resume_blocked"), "mission exposes resume for import-context stuck fixer")
+
+    new_id = mad_scientist.resume_blocked_step(stuck_mid, step_id=stuck_tester["id"])
+    check(models.get_run(fixer_run)["status"] == "cancelled", "resume dismisses awaiting fixer without failing mission")
+    check(models.get_run(new_id)["status"] in ("pending", "running"), "resume queues a fresh execute attempt")
+    check(models.get_mission(stuck_mid)["status"] == "running", "mission returns to running after import-context resume")
+
+    # UI surfaces install controls for pytest offer + import-context resume
     graph.block_step(tester["id"], "Missing dependency 'pytest'")
     graph.block_mission(mission_id, "Missing dependency 'pytest'")
     models.update_mission(mission_id, status=graph.BLOCKED_HUMAN, note="Missing pytest")
@@ -712,6 +820,25 @@ def test_module_classification_and_install_gate():
     check("import / execution context" in html or "import_context" in html or "local import" in html.lower()
           or "Missing module" in html,
           "UI shows classification / missing-module diagnostics")
+
+    graph.block_step(stuck_tester["id"], "Import/execution-context failure for 'app'")
+    models.update_mission(stuck_mid, status=graph.BLOCKED_HUMAN, note="Import context")
+    graph.block_mission(stuck_mid, "Import context")
+    stuck_slug = models.get_workspace_by_id(stuck_ws)["slug"]
+    stuck_html = tank_app.app.test_client().get(f"/workspaces/{stuck_slug}").get_data(as_text=True)
+    check(
+        "Resume from Run tests" in stuck_html
+        or "Resume with fixed test context" in stuck_html
+        or "IMPORT CONTEXT" in stuck_html,
+        "UI exposes Resume for import-context failure",
+    )
+    check(
+        "not a package to install" in stuck_html.lower()
+        or "import/execution-context" in stuck_html.lower()
+        or "Do not pip install" in stuck_html
+        or "do not" in stuck_html.lower(),
+        "UI warns against Approve/install for import-context",
+    )
 
 
 def main():

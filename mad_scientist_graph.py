@@ -1048,8 +1048,24 @@ def mission_view(mission_id: int) -> dict | None:
                 awaiting is not None and actionable is None
             ),
             "can_resume": (
-                step["status"] == BLOCKED_HUMAN
+                (
+                    step["status"] == BLOCKED_HUMAN
+                    or (
+                        step["status"] == "awaiting_approval"
+                        and latest_verification
+                        and latest_verification.get("classification")
+                        == "import_context_failure"
+                    )
+                )
                 and all(dep_id in done_ids for dep_id in dependency_ids(step["id"]))
+            ),
+            "import_context_stuck": bool(
+                latest_verification
+                and latest_verification.get("classification") == "import_context_failure"
+                and (
+                    step["status"] == BLOCKED_HUMAN
+                    or step["status"] == "awaiting_approval"
+                )
             ),
             "evaluation": (
                 {"verdict": evaluation["verdict"], "critique": evaluation["critique"]}
@@ -1068,6 +1084,29 @@ def mission_view(mission_id: int) -> dict | None:
         and count_inflight(graph_row["id"]) == 0
     )
     resumable = resumable_blocked_steps(mission_id)
+    # Include awaiting import-context steps in the mission-level resume list.
+    import_context_resume = [
+        {
+            "id": step["id"],
+            "name": step["name"],
+            "role": step["role"],
+            "blocked_reason": (
+                step.get("blocked_reason")
+                or (
+                    (step.get("verification") or {}).get("diagnosis")
+                    if step.get("verification")
+                    else None
+                )
+                or "Import/execution-context failure — resume with corrected test cwd"
+            ),
+            "attempt_count": step["attempt_count"],
+            "breaker_epoch": step.get("breaker_epoch") or 0,
+        }
+        for step in steps
+        if step.get("import_context_stuck") and step.get("can_resume")
+        and not any(item["id"] == step["id"] for item in resumable)
+    ]
+    all_resumable = list(resumable) + import_context_resume
     pending_patch_count = sum(
         int((item.get("approval") or {}).get("patch_count") or 0)
         for item in waiting_approvals
@@ -1089,9 +1128,10 @@ def mission_view(mission_id: int) -> dict | None:
         "pending_installs": pending_installs,
         "steps": steps,
         "can_retry_scout": can_retry_scout,
-        "resumable_steps": resumable,
-        "can_resume_blocked": bool(resumable) and (
+        "resumable_steps": all_resumable,
+        "can_resume_blocked": bool(all_resumable) and (
             graph_row["status"] == BLOCKED_HUMAN
             or any(step["status"] == BLOCKED_HUMAN for step in raw_steps)
+            or any(step.get("import_context_stuck") for step in steps)
         ),
     }
