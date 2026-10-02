@@ -307,6 +307,9 @@ def approve_run(run_id):
             workspace=dict(workspace), authorized_tools=authorized,
         )
         payload["tool_exit_code"] = int(code)
+        payload = local_agent.apply_verification_metadata(
+            payload, code, cwd=workspace["repo_path"]
+        )
         import mad_scientist_graph as graph
 
         attempt = graph.get_attempt_by_run(run_id)
@@ -331,6 +334,13 @@ def approve_run(run_id):
             finished_at=_now(),
             agent_payload=json.dumps(payload),
         )
+        if status == "failed" and code != 0:
+            try:
+                import dependency_recovery
+
+                dependency_recovery.attach_install_offer(run_id, workspace["repo_path"])
+            except Exception:
+                pass
     except Exception as exc:
         local_agent._log(run["log_path"], f"[tank] apply failed: {exc}\n")
         models.update_run(
@@ -378,6 +388,67 @@ def reject_run(run_id):
     models.update_run(run_id, status="rejected", finished_at=_now())
     mission.advance_mission(run_id)
     return True
+
+
+def pending_approval_run_ids(mission_id: int) -> list[int]:
+    """Run ids awaiting approval for one mission, in ascending id order."""
+    import mad_scientist_graph as graph
+    import run_approval
+
+    view = graph.mission_view(mission_id)
+    if view and view.get("waiting_approvals"):
+        return [
+            int(item["run_id"])
+            for item in view["waiting_approvals"]
+            if item.get("run_id") is not None
+        ]
+    # Fallback for non-graph / template missions: scan mission runs.
+    ids = []
+    for run in models.list_mission_runs(mission_id, limit=200):
+        state = run_approval.approval_state(run)
+        if state.get("approval_available"):
+            ids.append(int(run["id"]))
+    ids.sort()
+    return ids
+
+
+def approve_mission_pending(mission_id: int) -> dict:
+    """Approve every pending change for one mission using approve_run semantics.
+
+    Mission-scoped only. Does not auto-approve future runs. Each approval is
+    audited through the same approve_run path as individual buttons.
+    """
+    mission_row = models.get_mission(mission_id)
+    if mission_row is None:
+        raise ValueError("Mission not found")
+    run_ids = pending_approval_run_ids(mission_id)
+    approved = []
+    failed = []
+    for run_id in run_ids:
+        # Re-check: advancing an earlier run may change later statuses.
+        run = models.get_run(run_id)
+        if run is None or run["status"] != "awaiting_approval":
+            continue
+        if run["mission_id"] != mission_id:
+            failed.append({"run_id": run_id, "reason": "cross-mission skipped"})
+            continue
+        if approve_run(run_id):
+            approved.append(run_id)
+            log_path = run["log_path"]
+            if log_path:
+                local_agent._log(
+                    log_path,
+                    "\n[tank] approved via mission bulk approve\n",
+                )
+        else:
+            failed.append({"run_id": run_id, "reason": "approve_run returned false"})
+    return {
+        "mission_id": mission_id,
+        "requested": run_ids,
+        "approved": approved,
+        "failed": failed,
+        "approved_count": len(approved),
+    }
 
 
 def tail_log(log_path, max_lines=None):

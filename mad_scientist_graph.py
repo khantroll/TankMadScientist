@@ -144,14 +144,21 @@ def open_graph(
 def record_attempt(step_id: int, run_id: int, kind: str, status: str = "pending") -> int:
     now = _now()
     step_status = _RUN_TO_STEP.get(status, "queued")
+    step = get_step(step_id)
+    epoch = 0
+    if step is not None:
+        try:
+            epoch = int(step["breaker_epoch"] or 0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            epoch = 0
     with models.get_db() as conn:
         cur = conn.execute(
             """
             INSERT INTO mad_scientist_attempts
-                (step_id, run_id, attempt_kind, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (step_id, run_id, attempt_kind, status, breaker_epoch, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (step_id, run_id, kind, status, now, now),
+            (step_id, run_id, kind, status, epoch, now, now),
         )
         conn.execute(
             """
@@ -336,8 +343,33 @@ def list_attempts(step_id: int):
         ).fetchall()
 
 
-def count_attempts(step_id: int) -> int:
-    return len(list_attempts(step_id))
+def count_attempts(step_id: int, epoch: int | None = None) -> int:
+    """Count attempts on a step.
+
+    When epoch is provided, only attempts in that breaker epoch count toward
+    the attempt cap. Historical attempts remain visible via list_attempts.
+    """
+    attempts = list_attempts(step_id)
+    if epoch is None:
+        return len(attempts)
+    total = 0
+    for row in attempts:
+        try:
+            row_epoch = int(row["breaker_epoch"] or 0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            row_epoch = 0
+        if row_epoch == epoch:
+            total += 1
+    return total
+
+
+def step_breaker_epoch(step) -> int:
+    if step is None:
+        return 0
+    try:
+        return int(step["breaker_epoch"] or 0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0
 
 
 def attempt_cap(graph_row) -> int:
@@ -614,17 +646,24 @@ def record_attempt_usage(run_id: int) -> None:
 def repeated_mistake_reason(step_id: int, attempt_id: int) -> str | None:
     with models.get_db() as conn:
         current = conn.execute(
-            "SELECT patch_hash, error_hash FROM mad_scientist_attempts WHERE id = ?",
+            """
+            SELECT patch_hash, error_hash, breaker_epoch
+            FROM mad_scientist_attempts WHERE id = ?
+            """,
             (attempt_id,),
         ).fetchone()
         if current is None:
             return None
+        try:
+            epoch = int(current["breaker_epoch"] or 0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            epoch = 0
         priors = conn.execute(
             """
             SELECT patch_hash, error_hash FROM mad_scientist_attempts
-            WHERE step_id = ? AND id != ?
+            WHERE step_id = ? AND id != ? AND COALESCE(breaker_epoch, 0) = ?
             """,
-            (step_id, attempt_id),
+            (step_id, attempt_id, epoch),
         ).fetchall()
     step = get_step(step_id)
     name = step["name"] if step is not None else str(step_id)
@@ -665,6 +704,60 @@ def block_step(step_id: int, reason: str) -> None:
             """,
             (BLOCKED_HUMAN, reason, now, step_id),
         )
+
+
+def unblock_step_for_resume(step_id: int) -> int:
+    """Clear BLOCKED_HUMAN on a step and bump its breaker epoch.
+
+    Historical attempts stay in place. The new epoch resets repeated-hash and
+    attempt-cap circuit breakers for the resumed attempt cycle.
+    Returns the new breaker epoch.
+    """
+    step = get_step(step_id)
+    if step is None:
+        raise ValueError("Step not found")
+    if step["status"] != BLOCKED_HUMAN:
+        raise ValueError(f"Step '{step['name']}' is not blocked")
+    epoch = step_breaker_epoch(step) + 1
+    now = _now()
+    with models.get_db() as conn:
+        conn.execute(
+            """
+            UPDATE mad_scientist_steps
+            SET status = 'planned',
+                blocked_reason = NULL,
+                breaker_epoch = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (epoch, now, step_id),
+        )
+    return epoch
+
+
+def resumable_blocked_steps(mission_id: int) -> list[dict]:
+    """Blocked steps whose dependencies are already done."""
+    graph_row = get_by_mission_id(mission_id)
+    if graph_row is None:
+        return []
+    steps = list_steps(graph_row["id"])
+    done = {step["id"] for step in steps if step["status"] == "done"}
+    ready = []
+    for step in steps:
+        if step["status"] != BLOCKED_HUMAN:
+            continue
+        deps = dependency_ids(step["id"])
+        if any(dep_id not in done for dep_id in deps):
+            continue
+        ready.append({
+            "id": step["id"],
+            "name": step["name"],
+            "role": step["role"],
+            "blocked_reason": step["blocked_reason"],
+            "attempt_count": count_attempts(step["id"]),
+            "breaker_epoch": step_breaker_epoch(step),
+        })
+    return ready
 
 
 def note_stop_reason(mission_id: int, reason: str, step_id: int | None = None) -> None:
@@ -822,7 +915,9 @@ def _display_status(step, done_ids: set[int]) -> str:
     return status
 
 
-def _attempt_public(attempt) -> dict:
+def _attempt_public(attempt, *, repo_path: str | None = None) -> dict:
+    import verification_display
+
     run = models.get_run(attempt["run_id"])
     approval = run_approval.approval_state(run) if run is not None else {
         "run_id": attempt["run_id"],
@@ -832,16 +927,48 @@ def _attempt_public(attempt) -> dict:
     }
     status = run["status"] if run is not None else attempt["status"]
     error = ""
+    cwd = repo_path
     if run is not None:
         error = str(run["error"] or "").strip()
+        if cwd is None:
+            workspace = models.get_workspace_by_id(run["workspace_id"])
+            if workspace is not None:
+                cwd = workspace["repo_path"]
+    try:
+        epoch = int(attempt["breaker_epoch"] or 0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        epoch = 0
+    verification = (
+        verification_display.verification_view(run, repo_path=cwd)
+        if run is not None else None
+    )
+    install_offer = None
+    if run is not None:
+        payload = models.get_run_payload(run["id"]) or {}
+        raw_offer = payload.get("install_offer")
+        if isinstance(raw_offer, dict) and raw_offer.get("status") in (None, "pending", "failed"):
+            install_offer = raw_offer
+        elif verification and verification.get("installable"):
+            install_offer = {
+                "module": verification.get("missing_module"),
+                "interpreter": verification.get("interpreter"),
+                "install_command": verification.get("install_command"),
+                "cwd": verification.get("cwd"),
+                "status": "pending",
+            }
     return {
         "id": attempt["id"],
         "run_id": attempt["run_id"],
         "attempt_kind": attempt["attempt_kind"],
         "status": status,
         "error": error,
+        "error_hash": attempt["error_hash"],
+        "patch_hash": attempt["patch_hash"],
+        "breaker_epoch": epoch,
         "approval": approval,
         "approval_available": bool(approval.get("approval_available")),
+        "verification": verification,
+        "install_offer": install_offer,
     }
 
 
@@ -859,9 +986,20 @@ def mission_view(mission_id: int) -> dict | None:
     scout_failed = False
     non_scout_started = False
     waiting_approvals = []
+    pending_installs = []
+    mission = models.get_mission(mission_id)
+    repo_path = None
+    if mission is not None:
+        workspace = models.get_workspace_by_id(mission["workspace_id"])
+        if workspace is not None:
+            repo_path = workspace["repo_path"]
     for step in raw_steps:
-        attempts = [_attempt_public(item) for item in list_attempts(step["id"])]
-        actionable = next((item for item in reversed(attempts) if item["approval_available"]), None)
+        attempts = [
+            _attempt_public(item, repo_path=repo_path)
+            for item in list_attempts(step["id"])
+        ]
+        actionable_attempts = [item for item in attempts if item["approval_available"]]
+        actionable = actionable_attempts[-1] if actionable_attempts else None
         awaiting = next(
             (
                 item for item in reversed(attempts)
@@ -876,8 +1014,19 @@ def mission_view(mission_id: int) -> dict | None:
             if item.get("status") in ("failed", "rejected") and item.get("error"):
                 failure_reason = item["error"]
                 break
-        if actionable is not None:
-            waiting_approvals.append(actionable)
+        waiting_approvals.extend(actionable_attempts)
+        latest_verification = None
+        install_offer = None
+        for item in reversed(attempts):
+            if item.get("verification") and latest_verification is None:
+                latest_verification = item["verification"]
+            if item.get("install_offer") and install_offer is None:
+                install_offer = dict(item["install_offer"])
+                install_offer["step_id"] = step["id"]
+                install_offer["step_name"] = step["name"]
+                install_offer["run_id"] = item["run_id"]
+        if install_offer and step["status"] in (BLOCKED_HUMAN, "failed"):
+            pending_installs.append(install_offer)
         steps.append({
             "id": step["id"],
             "name": step["name"],
@@ -888,12 +1037,51 @@ def mission_view(mission_id: int) -> dict | None:
             "unresolved": _unresolved(step),
             "blocked_reason": step["blocked_reason"],
             "failure_reason": failure_reason,
+            "verification": latest_verification,
+            "install_offer": install_offer,
+            "breaker_epoch": step_breaker_epoch(step),
             "attempt_count": len(attempts),
             "attempts": attempts,
             "awaiting_run_id": actionable["run_id"] if actionable else None,
             "approval_available": actionable is not None,
             "approval_pending_without_payload": (
                 awaiting is not None and actionable is None
+            ),
+            "can_resume": (
+                (
+                    step["status"] == BLOCKED_HUMAN
+                    or (
+                        step["status"] == "awaiting_approval"
+                        and latest_verification
+                        and latest_verification.get("classification")
+                        == "import_context_failure"
+                    )
+                )
+                and all(dep_id in done_ids for dep_id in dependency_ids(step["id"]))
+            ),
+            "import_context_stuck": bool(
+                (
+                    step["status"] == BLOCKED_HUMAN
+                    or step["status"] == "awaiting_approval"
+                )
+                and (
+                    (
+                        latest_verification
+                        and latest_verification.get("classification")
+                        == "import_context_failure"
+                    )
+                    or (
+                        "No module named 'app'" in (failure_reason or "")
+                        and (
+                            "tests" in (failure_reason or "").lower()
+                            or "TankSacrifice" in (failure_reason or "")
+                        )
+                    )
+                    or (
+                        "import/execution-context" in (step["blocked_reason"] or "").lower()
+                        or "Do not pip install 'app'" in (step["blocked_reason"] or "")
+                    )
+                )
             ),
             "evaluation": (
                 {"verdict": evaluation["verdict"], "critique": evaluation["critique"]}
@@ -904,13 +1092,40 @@ def mission_view(mission_id: int) -> dict | None:
             scout_failed = True
         if step["role"] != "scout" and step["status"] != "planned":
             non_scout_started = True
-    mission = models.get_mission(mission_id)
     can_retry_scout = bool(
         mission
         and mission["status"] in ("failed", "aborted")
         and scout_failed
         and not non_scout_started
         and count_inflight(graph_row["id"]) == 0
+    )
+    resumable = resumable_blocked_steps(mission_id)
+    # Include awaiting import-context steps in the mission-level resume list.
+    import_context_resume = [
+        {
+            "id": step["id"],
+            "name": step["name"],
+            "role": step["role"],
+            "blocked_reason": (
+                step.get("blocked_reason")
+                or (
+                    (step.get("verification") or {}).get("diagnosis")
+                    if step.get("verification")
+                    else None
+                )
+                or "Import/execution-context failure — resume with corrected test cwd"
+            ),
+            "attempt_count": step["attempt_count"],
+            "breaker_epoch": step.get("breaker_epoch") or 0,
+        }
+        for step in steps
+        if step.get("import_context_stuck") and step.get("can_resume")
+        and not any(item["id"] == step["id"] for item in resumable)
+    ]
+    all_resumable = list(resumable) + import_context_resume
+    pending_patch_count = sum(
+        int((item.get("approval") or {}).get("patch_count") or 0)
+        for item in waiting_approvals
     )
     return {
         "status": graph_row["status"],
@@ -923,6 +1138,16 @@ def mission_view(mission_id: int) -> dict | None:
         "tokens_reported": _tokens_were_reported(graph_row["id"]),
         "max_attempts": graph_row["max_attempts"],
         "waiting_approvals": waiting_approvals,
+        "waiting_approval_count": len(waiting_approvals),
+        "pending_patch_count": pending_patch_count,
+        "needs_human_approval": bool(waiting_approvals),
+        "pending_installs": pending_installs,
         "steps": steps,
         "can_retry_scout": can_retry_scout,
+        "resumable_steps": all_resumable,
+        "can_resume_blocked": bool(all_resumable) and (
+            graph_row["status"] == BLOCKED_HUMAN
+            or any(step["status"] == BLOCKED_HUMAN for step in raw_steps)
+            or any(step.get("import_context_stuck") for step in steps)
+        ),
     }

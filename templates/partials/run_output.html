@@ -27,6 +27,10 @@
 </div>
 {% endif %}
 
+{% if verification and run.status in ('failed', 'rejected') %}
+  {% include "partials/verification_failure.html" %}
+{% endif %}
+
 {% if formatted %}
   {{ formatted | safe }}
 {% elif output %}

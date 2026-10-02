@@ -1,0 +1,36 @@
+{% if verification %}
+  <div class="verify-failure">
+    {% if verification.classification_label %}
+      <div>
+        <span class="verify-label">Classification</span>
+        <span class="verify-class verify-class--{{ verification.classification }}">{{ verification.classification_label }}</span>
+      </div>
+    {% endif %}
+    {% if verification.command %}
+      <div><span class="verify-label">Command</span> <span class="mono">{{ verification.command }}</span></div>
+    {% endif %}
+    {% if verification.cwd %}
+      <div><span class="verify-label">Working directory</span> <span class="mono">{{ verification.cwd }}</span></div>
+    {% endif %}
+    {% if verification.interpreter %}
+      <div><span class="verify-label">Interpreter</span> <span class="mono">{{ verification.interpreter }}</span></div>
+    {% endif %}
+    {% if verification.exit_code is not none %}
+      <div><span class="verify-label">Exit</span> <span class="mono">{{ verification.exit_code }}</span></div>
+    {% endif %}
+    {% if verification.missing_module %}
+      <div><span class="verify-label">Missing module</span> <span class="mono">{{ verification.missing_module }}</span></div>
+    {% endif %}
+    {% if verification.snippet %}
+      <div><span class="verify-label">Output</span> <span class="verify-snippet">{{ verification.snippet }}</span></div>
+    {% endif %}
+    {% if verification.classification == 'import_context_failure' %}
+      <div class="form-hint" style="margin-top:6px;">
+        Tank reads this as a local import/execution-context issue, not a package to install.
+      </div>
+    {% endif %}
+    {% if verification.diagnosis %}
+      <div class="form-hint" style="margin-top:6px;">{{ verification.diagnosis }}</div>
+    {% endif %}
+  </div>
+{% endif %}

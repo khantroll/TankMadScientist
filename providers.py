@@ -1254,6 +1254,9 @@ def _start_local_agent(
                 )
                 ran = True
                 payload["tool_exit_code"] = int(code)
+                payload = local_agent.apply_verification_metadata(
+                    payload, code, cwd=ctx.workspace["repo_path"]
+                )
                 local_agent.log_run_outcome(ctx.log_path, int(code))
             current = models.get_run(ctx.run_id)
             if current and current["status"] == "cancelled":
@@ -1277,6 +1280,15 @@ def _start_local_agent(
                     status="failed",
                     error=error,
                 )
+                if ran and code != 0:
+                    try:
+                        import dependency_recovery
+
+                        dependency_recovery.attach_install_offer(
+                            ctx.run_id, ctx.workspace["repo_path"]
+                        )
+                    except Exception:
+                        pass
                 on_finished(1)
                 return
             models.update_run(
@@ -1285,6 +1297,15 @@ def _start_local_agent(
                 status="done" if code == 0 else "failed",
                 error=None if code == 0 else local_agent.verification_failure_text(code),
             )
+            if code != 0:
+                try:
+                    import dependency_recovery
+
+                    dependency_recovery.attach_install_offer(
+                        ctx.run_id, ctx.workspace["repo_path"]
+                    )
+                except Exception:
+                    pass
             on_finished(code)
             return
 

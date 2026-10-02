@@ -1,0 +1,38 @@
+{% if install_offer and install_offer.module %}
+  <div class="install-offer">
+    <div class="mission-action-label">MISSING DEPENDENCY</div>
+    <p class="mission-action-copy">
+      Missing module: <span class="mono">{{ install_offer.module }}</span>
+      {% if install_offer.interpreter %}
+        · interpreter <span class="mono">{{ install_offer.interpreter }}</span>
+      {% endif %}
+    </p>
+    {% if install_offer.install_command %}
+      <p class="mono" style="font-size:12px; margin:0 0 8px;">{{ install_offer.install_command }}</p>
+    {% endif %}
+    <div class="mission-action-buttons">
+      <form class="inline-form"
+            hx-post="{{ url_for('install_dependency_and_retry', slug=workspace.slug, mission_id=m.id) }}"
+            hx-target="#mission-list"
+            hx-swap="innerHTML">
+        <input type="hidden" name="step_id" value="{{ install_offer.step_id }}">
+        <input type="hidden" name="module" value="{{ install_offer.module }}">
+        <button class="btn btn-sm btn-approve" type="submit">Install {{ install_offer.module }} and retry</button>
+      </form>
+      <form class="inline-form"
+            hx-post="{{ url_for('retry_without_dependency_install', slug=workspace.slug, mission_id=m.id) }}"
+            hx-target="#mission-list"
+            hx-swap="innerHTML">
+        <input type="hidden" name="step_id" value="{{ install_offer.step_id }}">
+        <button class="btn btn-sm" type="submit">Retry without installing</button>
+      </form>
+      <form class="inline-form"
+            hx-post="{{ url_for('dismiss_dependency_install', slug=workspace.slug, mission_id=m.id) }}"
+            hx-target="#mission-list"
+            hx-swap="innerHTML">
+        <input type="hidden" name="step_id" value="{{ install_offer.step_id }}">
+        <button class="btn btn-sm btn-cancel" type="submit">Handle manually</button>
+      </form>
+    </div>
+  </div>
+{% endif %}

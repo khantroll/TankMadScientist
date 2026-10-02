@@ -8,7 +8,10 @@
   {% for entry in mission_entries %}
   {% set m = entry.mission %}
   {% set mruns = entry.runs %}
-  <div class="mission-card">
+  {% set g = entry.graph %}
+  {% set debrief = entry.debrief %}
+  <div class="mission-card{% if g and g.needs_human_approval %} mission-card--action-required{% endif %}{% if g and g.status == 'BLOCKED_HUMAN' %} mission-card--blocked{% endif %}"
+       id="mission-card-{{ m.id }}">
     <div class="mission-head">
       <span class="status-badge status-{{ m.status }}">{{ m.status }}</span>
       <span class="mono" style="font-size:11px; color:var(--text-muted);">{{ m.template }}</span>
@@ -28,8 +31,62 @@
     {% if m.note %}
       <div class="mission-note">{{ m.note }}</div>
     {% endif %}
-    {% if entry.graph %}
-      {% set g = entry.graph %}
+
+    {% if g and g.needs_human_approval %}
+      {% set pending_n = g.waiting_approval_count or g.waiting_approvals|length %}
+      <div class="mission-action-required" id="mission-approvals-{{ m.id }}">
+        <div class="mission-action-label">ACTION REQUIRED</div>
+        <p class="mission-action-copy">
+          {{ pending_n }} change{{ 's' if pending_n != 1 else '' }} awaiting approval
+          {% if g.pending_patch_count %}· {{ g.pending_patch_count }} file{{ 's' if g.pending_patch_count != 1 else '' }}{% endif %}
+        </p>
+        <div class="mission-action-buttons">
+          <a class="btn btn-sm btn-approve" href="#mission-approvals-{{ m.id }}-detail">Review &amp; Approve</a>
+          <form class="inline-form"
+                hx-post="{{ url_for('approve_mission_all', slug=workspace.slug, mission_id=m.id) }}"
+                hx-target="#mission-list"
+                hx-swap="innerHTML">
+            <button class="btn btn-sm btn-approve" type="submit">Approve all {{ pending_n }}</button>
+          </form>
+          <a class="btn btn-sm" href="#mission-approvals-{{ m.id }}-detail">Review individually</a>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if g and g.pending_installs %}
+      {% for install_offer in g.pending_installs %}
+        {% include "partials/install_offer.html" %}
+      {% endfor %}
+    {% endif %}
+
+    {% if g and g.can_resume_blocked and g.resumable_steps %}
+      <div class="mission-action-required mission-action-required--resume">
+        <div class="mission-action-label">
+          {% if g.steps|selectattr('import_context_stuck')|list %}IMPORT CONTEXT · RESUME{% else %}BLOCKED · RESUME AVAILABLE{% endif %}
+        </div>
+        {% for step in g.resumable_steps %}
+          <form class="mission-resume-step"
+                hx-post="{{ url_for('resume_mad_scientist_step', slug=workspace.slug, mission_id=m.id) }}"
+                hx-target="#mission-list"
+                hx-swap="innerHTML">
+            <input type="hidden" name="step_id" value="{{ step.id }}">
+            <p class="mission-action-copy">
+              {{ step.name }}
+              {% if step.blocked_reason %}· {{ step.blocked_reason }}{% endif %}
+            </p>
+            <button class="btn btn-sm btn-approve" type="submit">
+              {% if g.steps|selectattr('import_context_stuck')|selectattr('id', 'equalto', step.id)|list %}
+                Resume with fixed test context
+              {% else %}
+                Resume from {{ step.name }}
+              {% endif %}
+            </button>
+          </form>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if g %}
       <div class="mission-banner">
         Graph {{ g.status }}
         {% if g.summary %}· plan: {{ g.summary }}{% endif %}
@@ -119,9 +176,12 @@
           {% endif %}
         </div>
       {% endif %}
-      <ul class="graph-steps">
+
+      {% include "partials/mission_debrief.html" %}
+
+      <ul class="graph-steps" id="mission-approvals-{{ m.id }}-detail">
         {% for step in g.steps %}
-        <li class="graph-step">
+        <li class="graph-step" id="graph-step-{{ step.id }}">
           <span class="status-badge status-{{ step.display_status }}">{{ step.display_status }}</span>
           <span>{{ step.name }}</span>
           <span class="mono">{{ step.role }}</span>
@@ -135,6 +195,29 @@
             <span class="mono">evaluation {{ step.evaluation.verdict }}</span>
           {% endif %}
           <span class="mono">{{ step.attempt_count }} attempt{{ 's' if step.attempt_count != 1 else '' }}</span>
+          {% if step.can_resume %}
+            <form class="inline-form mission-resume-step"
+                  hx-post="{{ url_for('resume_mad_scientist_step', slug=workspace.slug, mission_id=m.id) }}"
+                  hx-target="#mission-list"
+                  hx-swap="innerHTML">
+              <input type="hidden" name="step_id" value="{{ step.id }}">
+              <button class="btn btn-sm btn-approve" type="submit">
+                {% if step.import_context_stuck %}
+                  Resume with fixed test context
+                {% else %}
+                  Resume from {{ step.name }}
+                {% endif %}
+              </button>
+            </form>
+          {% endif %}
+          {% if step.import_context_stuck %}
+            <div class="graph-block-reason">
+              This is an import/execution-context failure (e.g. <span class="mono">No module named 'app'</span> with
+              <span class="mono">TankSacrifice/tests</span>) — not a package to install and usually not a code patch to Approve.
+              Prefer <strong>Resume with fixed test context</strong> so Tank retries with corrected pytest cwd/path/PYTHONPATH.
+              {% if step.approval_available %}Reject the fixer if you do not want that patch applied.{% endif %}
+            </div>
+          {% endif %}
           {% if step.approval_available %}
             {% for attempt in step.attempts if attempt.approval_available %}
               {% with approval=attempt.approval %}
@@ -150,12 +233,24 @@
           {% if step.failure_reason %}
             <div class="graph-block-reason">{{ step.failure_reason }}</div>
           {% endif %}
+          {% if step.verification and (step.display_status in ('blocked', 'failed', 'awaiting_approval') or step.verification.exit_code not in (none, 0)) %}
+            {% with verification=step.verification %}
+              {% include "partials/verification_failure.html" %}
+            {% endwith %}
+          {% endif %}
+          {% if step.install_offer and step.display_status in ('blocked', 'failed') %}
+            {% with install_offer=step.install_offer %}
+              {% include "partials/install_offer.html" %}
+            {% endwith %}
+          {% endif %}
           {% if step.attempts %}
             <div class="graph-attempt-stack">
               {% for attempt in step.attempts %}
                 <span>
                   {{ attempt.attempt_kind }}
                   / {{ attempt.status }}
+                  {% if attempt.breaker_epoch %}· epoch {{ attempt.breaker_epoch }}{% endif %}
+                  {% if attempt.error_hash %}<span class="mono" title="{{ attempt.error_hash }}">· err {{ attempt.error_hash[:8] }}</span>{% endif %}
                   <a href="{{ url_for('run_output', run_id=attempt.run_id) }}">#{{ attempt.run_id }}</a>{% if not loop.last %};{% endif %}
                 </span>
               {% endfor %}

@@ -12,6 +12,7 @@
     <p class="form-error" style="margin-bottom:16px;">{{ delete_error }}</p>
   {% endif %}
   <div class="workspace-header-actions">
+    <a class="btn btn-sm" href="{{ url_for('workspace_arsenal', slug=workspace.slug) }}">Arsenal</a>
     <form action="{{ url_for('delete_workspace', slug=workspace.slug) }}" method="post" class="inline-form"
           onsubmit="return confirm('Delete workspace {{ workspace.name }}? All runs, roles, and missions for it will be removed.');">
       <button class="btn btn-cancel" type="submit">Delete workspace</button>

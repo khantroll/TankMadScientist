@@ -297,6 +297,18 @@ def _fixer_step(failed_step: dict | None, failed_run, attempt: int, max_loops: i
     failed_name = failed_run["stage_name"] or "previous step"
     original_task = (failed_step or {}).get("task") or failed_run["task"]
     provider = (failed_step or {}).get("provider") or failed_run["provider"]
+    workspace = models.get_workspace_by_id(failed_run["workspace_id"])
+    repo_path = workspace["repo_path"] if workspace is not None else None
+    try:
+        import verification_display
+
+        failure_context = verification_display.fixer_failure_context(
+            failed_run, repo_path=repo_path
+        )
+    except Exception:
+        failure_context = (
+            f"Prior error: {str(failed_run['error'] or '').strip() or '(none)'}"
+        )
     return {
         "name": f"Fix {failed_name} (attempt {attempt})",
         "role": "fixer",
@@ -307,6 +319,10 @@ def _fixer_step(failed_step: dict | None, failed_run, attempt: int, max_loops: i
             "changes needed to unblock the original step. Do not only audit and do not "
             "return a generic plan when implementation is required.\n\n"
             f"Original failed task:\n{original_task}\n\n"
+            f"{failure_context}\n\n"
+            "If Tank classifies this as an import/execution-context failure, inspect the "
+            "test import, application module layout, and working directory before changing "
+            "code. Do not invent a pip install for a local project module such as 'app'.\n\n"
             f"This is fix attempt {attempt} of {max_loops}. Return patch JSON through "
             "the normal Tank local_agent schema when file changes are needed."
         ),
@@ -853,6 +869,17 @@ def _block_graph_mission(mission, plan: dict, run, reason: str, step_id: int | N
             finished_at=_now(),
             error=reason,
         )
+    try:
+        import arsenal
+
+        arsenal.record_verification_lesson(
+            mission["workspace_id"],
+            run,
+            mission_id=mission["id"],
+            blocked_reason=reason,
+        )
+    except Exception:
+        pass
     _store_memory(mission["workspace_id"], mission, plan, run)
 
 
@@ -1019,6 +1046,38 @@ def _downgrade_unverified_success(run):
     return models.get_run(run["id"])
 
 
+def _enrich_human_block_reason(reason: str, run, repo_path: str | None) -> str:
+    """Append Resume guidance when the breaker fired on an import-context failure."""
+    try:
+        import verification_display
+
+        view = verification_display.verification_view(run, repo_path=repo_path) or {}
+        try:
+            error = str(run["error"] or "")
+        except (TypeError, KeyError, IndexError):
+            error = ""
+        is_import = view.get("classification") == "import_context_failure"
+        if not is_import and (
+            "No module named 'app'" in error
+            or ("ModuleNotFoundError" in error and "/tests" in error.replace("\\", "/"))
+        ):
+            is_import = True
+        if not is_import:
+            return reason
+        diagnosis = (view.get("diagnosis") or "").strip()
+        guidance = (
+            " Import/execution-context failure (wrong pytest cwd/path) — "
+            "not a pip package. Click Resume from this step so Tank retries "
+            "with corrected pytest cwd/path/PYTHONPATH. Do not pip install 'app'."
+        )
+        text = f"{reason}{guidance}"
+        if diagnosis and diagnosis not in text:
+            text = f"{text} {diagnosis}"
+        return text
+    except Exception:
+        return reason
+
+
 def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_run_id) -> bool:
     """Apply breakers before queueing another attempt on this step.
 
@@ -1033,20 +1092,49 @@ def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_
     if attempt is not None:
         reason = graph.repeated_mistake_reason(step_row["id"], attempt["id"])
         if reason:
+            reason = _enrich_human_block_reason(
+                reason, run, workspace["repo_path"] if workspace else None
+            )
             graph.block_step(step_row["id"], reason)
             models.update_mission(mission["id"], note=reason)
             _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+            try:
+                import arsenal
+
+                arsenal.record_verification_lesson(
+                    workspace["id"],
+                    run,
+                    mission_id=mission["id"],
+                    blocked_reason=reason,
+                )
+            except Exception:
+                pass
             _continue_graph(workspace, mission, graph_row, plan, run, fallback_run_id)
             return True
     cap = graph.attempt_cap(graph_row)
-    count = graph.count_attempts(step_row["id"])
+    epoch = graph.step_breaker_epoch(step_row)
+    count = graph.count_attempts(step_row["id"], epoch=epoch)
     if count >= cap:
         reason = (
             f"Attempt cap reached on step '{step_row['name']}' ({count} of {cap})."
         )
+        reason = _enrich_human_block_reason(
+            reason, run, workspace["repo_path"] if workspace else None
+        )
         graph.block_step(step_row["id"], reason)
         models.update_mission(mission["id"], note=reason)
         _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+        try:
+            import arsenal
+
+            arsenal.record_verification_lesson(
+                workspace["id"],
+                run,
+                mission_id=mission["id"],
+                blocked_reason=reason,
+            )
+        except Exception:
+            pass
         _continue_graph(workspace, mission, graph_row, plan, run, fallback_run_id)
         return True
     return False
@@ -1090,6 +1178,26 @@ def _advance_graph_locked(run, mission) -> bool:
     graph_row = graph.get_by_mission_id(mission["id"])
 
     if run["status"] in ("rejected", "cancelled"):
+        # Rejecting a fixer that followed an import-context failure should open
+        # Resume, not kill the mission — Approve was the wrong lever.
+        if kind == "fixer" and _step_has_import_context_failure(
+            step_row["id"], workspace["repo_path"]
+        ):
+            reason = (
+                f"Rejected fixer for '{step_row['name']}' after an import/"
+                "execution-context failure. Resume from this step so Tank "
+                "retries with corrected pytest cwd/path/PYTHONPATH — do not "
+                "pip install local modules like 'app'."
+            )
+            graph.block_step(step_row["id"], reason)
+            models.update_mission(
+                mission["id"],
+                status=graph.BLOCKED_HUMAN,
+                note=reason,
+            )
+            graph.block_mission(mission["id"], reason)
+            _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+            return True
         note = f"Step '{step_row['name']}' ended with status {run['status']}."
         _fail_graph_mission(mission, plan, run, note, step_id=step_row["id"])
         return True
@@ -1099,6 +1207,70 @@ def _advance_graph_locked(run, mission) -> bool:
             note = f"Step '{step_row['name']}' ended with status failed."
             _fail_graph_mission(mission, plan, run, note, step_id=step_row["id"])
             return True
+
+        # Environment / import-context failures wait for a human (install or
+        # Resume) instead of burning fixer attempts on a Tank execution issue.
+        try:
+            import dependency_recovery
+            import verification_display
+
+            offer = dependency_recovery.attach_install_offer(
+                run["id"], workspace["repo_path"]
+            )
+            view = verification_display.verification_view(
+                run, repo_path=workspace["repo_path"]
+            ) or {}
+            if offer or (view.get("installable") and view.get("missing_module")):
+                module = (offer or view).get("module") or view.get("missing_module")
+                interpreter = (offer or view).get("interpreter") or view.get("interpreter") or "active interpreter"
+                reason = (
+                    f"Missing dependency '{module}' in {interpreter}. "
+                    "Approve install to continue, or retry/handle manually."
+                )
+                graph.block_step(step_row["id"], reason)
+                models.update_mission(mission["id"], note=reason)
+                _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+                try:
+                    import arsenal
+
+                    arsenal.record_verification_lesson(
+                        workspace["id"],
+                        run,
+                        mission_id=mission["id"],
+                        blocked_reason=reason,
+                    )
+                except Exception:
+                    pass
+                _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
+                return True
+            if view.get("classification") == "import_context_failure":
+                module = view.get("missing_module") or "local module"
+                diagnosis = (view.get("diagnosis") or "").strip()
+                reason = (
+                    f"Import/execution-context failure for '{module}'. "
+                    "Do not pip install it. Resume after Tank corrects pytest "
+                    "cwd/path/PYTHONPATH, or fix the workspace repo_path."
+                )
+                if diagnosis:
+                    reason = f"{reason} {diagnosis}"
+                graph.block_step(step_row["id"], reason)
+                models.update_mission(mission["id"], note=reason)
+                _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+                try:
+                    import arsenal
+
+                    arsenal.record_verification_lesson(
+                        workspace["id"],
+                        run,
+                        mission_id=mission["id"],
+                        blocked_reason=reason,
+                    )
+                except Exception:
+                    pass
+                _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
+                return True
+        except Exception:
+            pass
 
         if _halt_before_next_attempt(
             workspace, mission, plan, run, step_row, run["id"]
@@ -1183,7 +1355,18 @@ def _advance_graph_locked(run, mission) -> bool:
             )
             return True
         mission = models.get_mission(mission["id"])
-        _log_pattern_synthesis(mission, pattern_synthesis.bind_plan(workspace, mission, plan))
+        synthesis = pattern_synthesis.bind_plan(workspace, mission, plan)
+        _log_pattern_synthesis(mission, synthesis)
+        try:
+            import arsenal
+
+            arsenal.record_synthesis_lessons(
+                workspace["id"],
+                mission["id"],
+                pattern_synthesis.public_view(mission["id"]),
+            )
+        except Exception:
+            pass
         return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
 
     if kind == "fixer":
@@ -1211,6 +1394,137 @@ def _advance_graph_locked(run, mission) -> bool:
         return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
 
     return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
+
+
+def _step_has_import_context_failure(step_id: int, repo_path: str | None) -> bool:
+    """True when a prior attempt on this step failed as import/execution-context."""
+    import verification_display
+
+    for attempt in reversed(graph.list_attempts(step_id)):
+        run = models.get_run(attempt["run_id"])
+        if run is None:
+            continue
+        view = verification_display.verification_view(run, repo_path=repo_path) or {}
+        if view.get("classification") == "import_context_failure":
+            return True
+        error = str(run["error"] or "")
+        if "ModuleNotFoundError" in error and "No module named 'app'" in error:
+            return True
+    return False
+
+
+def _dismiss_awaiting_for_resume(step_id: int) -> list[int]:
+    """Cancel awaiting_approval runs on a step without advancing the mission."""
+    import local_agent
+
+    dismissed = []
+    for attempt in graph.list_attempts(step_id):
+        run = models.get_run(attempt["run_id"])
+        if run is None or run["status"] != "awaiting_approval":
+            continue
+        if run["log_path"]:
+            local_agent._log(
+                run["log_path"],
+                "\n[tank] superseded: resume with corrected test context "
+                "(import/execution-context failure)\n",
+            )
+        models.update_run(
+            run["id"],
+            status="cancelled",
+            finished_at=_now(),
+            error="Superseded by resume with corrected test context",
+        )
+        graph.sync_run_status(run["id"])
+        dismissed.append(int(run["id"]))
+    return dismissed
+
+
+def resume_blocked_step(mission_id: int, step_id: int | None = None) -> int:
+    """Resume a blocked graph step without regenerating the mission plan.
+
+    Preserves completed steps and attempt history. Bumps the step breaker
+    epoch so circuit breakers apply fresh to the resumed cycle, then queues
+    a new execute attempt on that step.
+
+    Also accepts a step stuck on an awaiting fixer after an import/execution-
+    context failure (the screenshot case: Approve #fixer while `import app`
+    failed) — dismisses that approval and retries with corrected test cwd.
+    """
+    mission = models.get_mission(mission_id)
+    if mission is None or mission["template"] != TEMPLATE_ID:
+        raise ValueError("Mad Scientist mission not found")
+    if not graph.has_graph(mission_id):
+        raise ValueError("Mission has no durable graph")
+    workspace = models.get_workspace_by_id(mission["workspace_id"])
+    if workspace is None:
+        raise ValueError("Workspace not found")
+
+    resumable = graph.resumable_blocked_steps(mission_id)
+    # Stuck awaiting_approval fixer after import-context: make it resumable.
+    if step_id is not None:
+        step_row = graph.get_step(step_id)
+        if (
+            step_row is not None
+            and step_row["status"] == "awaiting_approval"
+            and _step_has_import_context_failure(step_id, workspace["repo_path"])
+        ):
+            _dismiss_awaiting_for_resume(step_id)
+            reason = (
+                "Import/execution-context failure. Resume retries with "
+                "corrected pytest cwd/path/PYTHONPATH."
+            )
+            graph.block_step(step_id, reason)
+            if mission["status"] != graph.BLOCKED_HUMAN:
+                models.update_mission(mission_id, status=graph.BLOCKED_HUMAN, note=reason)
+                graph.block_mission(mission_id, reason)
+            resumable = graph.resumable_blocked_steps(mission_id)
+
+    if not resumable:
+        raise ValueError("No blocked step is ready to resume")
+    target = None
+    if step_id is not None:
+        target = next((item for item in resumable if item["id"] == step_id), None)
+        if target is None:
+            raise ValueError("That blocked step cannot be resumed yet")
+    else:
+        target = resumable[0]
+
+    epoch = graph.unblock_step_for_resume(target["id"])
+    models.update_mission(
+        mission_id,
+        status="running",
+        current_stage=target["name"],
+        note=f"Resumed from '{target['name']}' (breaker epoch {epoch})",
+    )
+    graph.set_status(mission_id, "running", blocked_reason=None)
+    if mission["parent_run_id"]:
+        parent = models.get_run(mission["parent_run_id"])
+        if parent is not None and parent["status"] in ("failed", "done", "cancelled"):
+            models.update_run(
+                mission["parent_run_id"],
+                status="running",
+                error=None,
+                finished_at=None,
+            )
+
+    mission = models.get_mission(mission_id)
+    parent_id = graph.newest_dependency_run_id(target["id"]) or mission["parent_run_id"]
+    run_id = _create_step_attempt(
+        workspace,
+        mission,
+        graph.get_step(target["id"]),
+        parent_id,
+        "execute",
+    )
+    _append_parent_log(
+        mission,
+        f"[tank] resumed blocked step '{target['name']}' "
+        f"epoch={epoch} run=#{run_id}",
+    )
+    import session_manager
+
+    session_manager.launch_pending()
+    return run_id
 
 
 def retry_scout(mission_id: int) -> int:

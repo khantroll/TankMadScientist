@@ -53,6 +53,7 @@ include-package-data = true
     "README.md",
 ]
 "share/tank/templates" = [
+    "templates/arsenal.html",
     "templates/base.html",
     "templates/configure_ai.html",
     "templates/dashboard.html",
@@ -63,12 +64,15 @@ include-package-data = true
     "templates/partials/approval_controls.html",
     "templates/partials/crew_step_row.html",
     "templates/partials/git_result.html",
+    "templates/partials/install_offer.html",
+    "templates/partials/mission_debrief.html",
     "templates/partials/mission_list.html",
     "templates/partials/provider_probe.html",
     "templates/partials/provider_select.html",
     "templates/partials/run_children.html",
     "templates/partials/run_list.html",
     "templates/partials/run_output.html",
+    "templates/partials/verification_failure.html",
     "templates/partials/workspace_cards.html",
 ]
 "share/tank/static/css" = ["static/css/style.css"]
@@ -80,4 +84,5 @@ include-package-data = true
     "scripts/validate_model_call_errors.py",
     "scripts/validate_tester_stage_validation.py",
     "scripts/validate_pytest_invocation.py",
+    "scripts/validate_observability.py",
 ]

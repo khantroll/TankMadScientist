@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS mad_scientist_steps (
     position INTEGER NOT NULL DEFAULT 0,
     unresolved_dependencies TEXT,
     blocked_reason TEXT,
+    breaker_epoch INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(graph_mission_id, name)
@@ -164,6 +165,7 @@ CREATE TABLE IF NOT EXISTS mad_scientist_attempts (
     tokens INTEGER,
     patch_hash TEXT,
     error_hash TEXT,
+    breaker_epoch INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -218,6 +220,8 @@ def _migrate_db(conn):
         ("mad_scientist_attempts", "patch_hash", "TEXT"),
         ("mad_scientist_attempts", "error_hash", "TEXT"),
         ("mad_scientist_missions", "synthesis_json", "TEXT"),
+        ("mad_scientist_steps", "breaker_epoch", "INTEGER NOT NULL DEFAULT 0"),
+        ("mad_scientist_attempts", "breaker_epoch", "INTEGER NOT NULL DEFAULT 0"),
     ]
     for table, column, col_type in migrations:
         cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}

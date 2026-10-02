@@ -1,0 +1,134 @@
+{% if debrief and debrief.show %}
+<details class="mission-debrief"{% if debrief.status in ('failed', 'BLOCKED_HUMAN', 'blocked') or debrief.pending_approval_count %} open{% endif %}>
+  <summary>Mission Debrief · {{ debrief.status }}</summary>
+  <div class="debrief-body">
+    <section class="debrief-section">
+      <h5>Objective</h5>
+      <p>{{ debrief.objective }}</p>
+    </section>
+
+    {% if debrief.completed_steps %}
+    <section class="debrief-section">
+      <h5>Built / Completed</h5>
+      <ul>
+        {% for step in debrief.completed_steps %}
+          <li>{{ step.name }} <span class="mono">({{ step.role }})</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if debrief.verification_attempts %}
+    <section class="debrief-section">
+      <h5>Verified</h5>
+      <ul>
+        {% for item in debrief.verification_attempts %}
+          <li>
+            {{ item.step }} ·
+            {% if item.exit_code == 0 %}passed{% elif item.exit_code is not none %}exit {{ item.exit_code }}{% else %}{{ item.status }}{% endif %}
+            {% if item.command %}<span class="mono"> · {{ item.command }}</span>{% endif %}
+            {% if item.classification_label %}<span class="verify-class verify-class--{{ item.classification }}">{{ item.classification_label }}</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if debrief.failed_or_blocked_steps or debrief.blockers %}
+    <section class="debrief-section">
+      <h5>Blocked / Failed</h5>
+      <ul>
+        {% for step in debrief.failed_or_blocked_steps %}
+          <li>
+            {{ step.name }} · {{ step.display_status or step.status }}
+            {% if step.blocked_reason %}<div class="graph-block-reason">{{ step.blocked_reason }}</div>{% endif %}
+            {% if step.failure_reason %}<div class="graph-block-reason">{{ step.failure_reason }}</div>{% endif %}
+          </li>
+        {% endfor %}
+        {% for reason in debrief.blockers %}
+          <li>{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if debrief.files_touched %}
+    <section class="debrief-section">
+      <h5>Files touched</h5>
+      <ul>
+        {% for path in debrief.files_touched %}
+          <li class="mono">{{ path }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    <section class="debrief-section">
+      <h5>Created / Reused</h5>
+      <ul>
+        {% if debrief.specialists_generated or debrief.specialists_reused or debrief.specialists_adapted %}
+          <li>
+            Specialists:
+            {% if debrief.specialists_generated %}{{ debrief.specialists_generated }} generated{% endif %}
+            {% if debrief.specialists_reused %}{% if debrief.specialists_generated %}, {% endif %}{{ debrief.specialists_reused }} reused{% endif %}
+            {% if debrief.specialists_adapted %}{% if debrief.specialists_generated or debrief.specialists_reused %}, {% endif %}{{ debrief.specialists_adapted }} adapted{% endif %}
+          </li>
+        {% endif %}
+        {% if debrief.crews_generated or debrief.crews_reused or debrief.crews_adapted %}
+          <li>
+            Crews:
+            {% if debrief.crew_name %}{{ debrief.crew_name }} · {% endif %}
+            {% if debrief.crews_generated %}generated{% elif debrief.crews_reused %}reused{% elif debrief.crews_adapted %}adapted{% endif %}
+          </li>
+        {% endif %}
+        {% if debrief.rejected_crew %}
+          <li>Rejected unsuitable crew: {{ debrief.rejected_crew }}</li>
+        {% endif %}
+        {% if debrief.crew_rationale %}
+          <li>{{ debrief.crew_rationale }}</li>
+        {% endif %}
+        {% if not (debrief.specialists_generated or debrief.specialists_reused or debrief.specialists_adapted or debrief.crews_generated or debrief.crews_reused or debrief.crews_adapted) %}
+          <li class="dim">No Pattern Synthesis reuse data for this mission.</li>
+        {% endif %}
+      </ul>
+    </section>
+
+    {% if debrief.circuit_events %}
+    <section class="debrief-section">
+      <h5>Retry / circuit breaker</h5>
+      <ul>
+        {% for event in debrief.circuit_events %}
+          <li>{{ event.step }}{% if event.attempt_count %} · {{ event.attempt_count }} attempts{% endif %}: {{ event.reason }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if debrief.lessons or debrief.successful_patterns %}
+    <section class="debrief-section">
+      <h5>Learned</h5>
+      <ul>
+        {% for item in debrief.lessons %}
+          <li>{{ item }}</li>
+        {% endfor %}
+        {% for item in debrief.successful_patterns %}
+          <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if debrief.pending_approval_count or debrief.pending_installs %}
+    <section class="debrief-section">
+      <h5>Pending</h5>
+      {% if debrief.pending_approval_count %}
+        <p>Approve {{ debrief.pending_approval_count }} change{{ 's' if debrief.pending_approval_count != 1 else '' }}</p>
+      {% endif %}
+      {% for offer in debrief.pending_installs or [] %}
+        <p>Install {{ offer.module }} (approval-gated){% if offer.step_name %} for {{ offer.step_name }}{% endif %}</p>
+      {% endfor %}
+    </section>
+    {% endif %}
+  </div>
+</details>
+{% endif %}
