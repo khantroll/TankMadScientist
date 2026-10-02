@@ -222,10 +222,14 @@ def test_command_resolution() -> None:
         with show_pytest():
             preferred = repo_context.normalize_bare_pytest_command("pytest -q", str(root))
         check(str(venv_python) in preferred and preferred.endswith("-m pytest -q"), ".venv python is used even when pytest is on PATH")
+        explicit = repo_context.normalize_bare_pytest_command("python -m pytest -q", str(root))
         check(
-            repo_context.normalize_bare_pytest_command("python -m pytest -q", str(root))
-            == "python -m pytest -q",
+            str(venv_python) not in explicit,
             "an explicit python -m pytest command is not redirected into the venv",
+        )
+        check(
+            explicit.endswith("-m pytest -q"),
+            "explicit python -m pytest still runs as module pytest",
         )
 
         win_only = root / "win-layout"
