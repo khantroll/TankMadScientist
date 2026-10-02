@@ -498,6 +498,59 @@ def test_pytest_repo_path_and_pythonpath():
     check(int(code) == 0, "pytest succeeds for flat app.py with Tank test env")
     check(getattr(code, "cwd", "") == str(REPO), "test tool records repo cwd")
 
+    # Exact dogfood: workspace cwd is the *parent* of TankSacrifice and the
+    # command is `pytest TankSacrifice/tests` → ModuleNotFoundError: app.
+    parent = Path(TMP) / "parent-workspace"
+    nested = parent / "TankSacrifice"
+    nested.mkdir(parents=True)
+    (nested / "app.py").write_text("VALUE = 7\n", encoding="utf-8")
+    (nested / "tests").mkdir()
+    (nested / "tests" / "test_app.py").write_text(
+        "import app\n\ndef test_value():\n    assert app.VALUE == 7\n",
+        encoding="utf-8",
+    )
+    nested_root, nested_cmd = repo_context.resolve_python_test_root(
+        str(parent),
+        "python -m pytest TankSacrifice/tests -q",
+    )
+    check(
+        nested_root is not None and Path(nested_root).resolve() == nested.resolve(),
+        "resolves nested TankSacrifice project from parent workspace + path arg",
+    )
+    check(
+        "TankSacrifice/" not in nested_cmd and "tests" in nested_cmd,
+        "strips TankSacrifice/ prefix once nested root is selected",
+    )
+    parent_err = (
+        "Verification command exited 2: E ModuleNotFoundError: No module named 'app' "
+        "=========================== short test summary info =========================== "
+        "ERROR TankSacrifice/tests - ModuleNotFoundError: No module named 'app"
+    )
+    parent_hint = verification_display.pytest_collection_path_hint(parent_err, str(parent))
+    check(
+        parent_hint is not None and "TankSacrifice" in parent_hint and "parent" in parent_hint.lower(),
+        "diagnoses parent-workspace + TankSacrifice/tests collection failure",
+    )
+    check("do not pip install" in parent_hint.lower(), "parent-cwd diagnosis forbids pip install app")
+
+    dogfood_code = local_agent._run_tests_tool(
+        str(parent),
+        {
+            "run_tests": True,
+            "test_command": "python -m pytest TankSacrifice/tests -q",
+            "run_git_diff": False,
+        },
+        str(Path(TMP) / "pytest-parent.log"),
+    )
+    check(
+        int(dogfood_code) == 0,
+        "parent cwd + TankSacrifice/tests succeeds after nested cwd rewrite",
+    )
+    check(
+        Path(getattr(dogfood_code, "cwd", "")).resolve() == nested.resolve(),
+        "test tool records nested TankSacrifice cwd",
+    )
+
 
 def test_module_classification_and_install_gate():
     print("\n== local vs third-party + install gate ==")

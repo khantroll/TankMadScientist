@@ -426,6 +426,12 @@ def normalize_pytest_repo_paths(cmd: str, repo_path: str | None = None) -> str:
     return " ".join(parts)
 
 
+_NESTED_PYTEST_PATH_RE = re.compile(
+    r"(?:^|\s)(?P<name>[A-Za-z_][\w.-]*)[\\/](?P<tail>tests|test)(?=(?:[\\/\s]|$))",
+    re.IGNORECASE,
+)
+
+
 def has_flat_python_app_module(repo_path: str | None) -> bool:
     """True when the repo root exposes a common importable app module."""
     if not repo_path:
@@ -438,6 +444,91 @@ def has_flat_python_app_module(repo_path: str | None) -> bool:
         if (root / name / "__init__.py").is_file():
             return True
     return False
+
+
+def looks_like_python_project(repo_path: str | None) -> bool:
+    """Heuristic for a patient Python project root (flat app, tests, or markers)."""
+    if not repo_path:
+        return False
+    root = Path(repo_path)
+    if not root.is_dir():
+        return False
+    if has_flat_python_app_module(repo_path):
+        return True
+    if (root / "tests").is_dir() or (root / "test").is_dir():
+        return True
+    for marker in ("pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"):
+        if (root / marker).is_file():
+            return True
+    if (root / "requirements.txt").is_file() and any(root.glob("*.py")):
+        return True
+    return False
+
+
+def nested_python_project_from_command(
+    repo_path: str | None,
+    cmd: str | None = None,
+) -> str | None:
+    """If cmd targets Child/tests under repo_path, return that child project path."""
+    if not repo_path or not cmd or "pytest" not in cmd.lower():
+        return None
+    root = Path(repo_path)
+    if not root.is_dir():
+        return None
+    for match in _NESTED_PYTEST_PATH_RE.finditer(cmd):
+        name = match.group("name")
+        if not name or name in {".", ".."}:
+            continue
+        if name.lower() == root.name.lower():
+            # Already the workspace folder name — handled by path stripping.
+            continue
+        candidate = root / name
+        if looks_like_python_project(str(candidate)):
+            return str(candidate.resolve())
+    return None
+
+
+def nested_python_project_singleton(repo_path: str | None) -> str | None:
+    """When workspace points at a parent folder with one Python child project, return it."""
+    if not repo_path or looks_like_python_project(repo_path):
+        return None
+    root = Path(repo_path)
+    if not root.is_dir():
+        return None
+    children = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or child.name in SKIP_DIRS or child.name.startswith("."):
+            continue
+        if looks_like_python_project(str(child)):
+            children.append(child)
+    if len(children) == 1:
+        return str(children[0].resolve())
+    return None
+
+
+def resolve_python_test_root(
+    repo_path: str | None,
+    cmd: str | None = None,
+) -> tuple[str | None, str]:
+    """Pick the cwd pytest should use and rewrite the command for that root.
+
+    Dogfood case: workspace repo_path is the parent of TankSacrifice and the
+    model runs `pytest TankSacrifice/tests`. Pytest's rootdir becomes the
+    parent, so `import app` fails. Prefer the nested project directory and
+    strip the `TankSacrifice/` path prefix.
+    """
+    text = (cmd or "").strip()
+    if not repo_path:
+        return None, text
+    nested = nested_python_project_from_command(repo_path, text)
+    if nested is None and text and "pytest" in text.lower():
+        nested = nested_python_project_singleton(repo_path)
+    effective = nested or str(Path(repo_path).resolve())
+    if nested:
+        text = normalize_pytest_repo_paths(text, nested)
+    else:
+        text = normalize_pytest_repo_paths(text, effective)
+    return effective, text
 
 
 def python_test_environ(repo_path: str | None, base: dict | None = None) -> dict:

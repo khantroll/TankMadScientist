@@ -588,40 +588,61 @@ def _run_tests_tool(
     workspace: dict | None = None,
     profile: dict | None = None,
 ) -> int:
+    # Resolve nested patient roots from the raw model/workspace command first
+    # (e.g. parent cwd + `pytest TankSacrifice/tests`) so path stripping does
+    # not erase the Child/tests signal before we pick the test cwd.
+    raw_cmd = ""
+    if workspace and workspace.get("test_command"):
+        raw_cmd = str(workspace.get("test_command") or "")
+    elif post_actions and post_actions.get("test_command"):
+        raw_cmd = str(post_actions.get("test_command") or "")
+    test_cwd, _ = repo_context.resolve_python_test_root(repo_path, raw_cmd)
+    test_cwd = test_cwd or repo_path
+    if Path(test_cwd).resolve() != Path(repo_path).resolve():
+        _log(
+            log_path,
+            f"[tank] nested Python project detected; using test cwd {test_cwd} "
+            f"(workspace repo_path was {repo_path})\n",
+        )
+        # Re-detect profile inside the nested project when cwd changes.
+        profile = repo_context.detect_project_profile(test_cwd)
     cmd = repo_context.resolve_test_command(
-        repo_path, workspace=workspace, post_actions=post_actions, profile=profile
+        test_cwd, workspace=workspace, post_actions=post_actions, profile=profile
     )
     if not cmd:
         _log(log_path, "[tank] no test command configured or detected — skipping tests\n")
         return CommandResult(0)
-    repo_error = config.check_repo_path(repo_path)
+    # Final pass: strip any remaining RepoName/ prefix against the effective cwd.
+    test_cwd, cmd = repo_context.resolve_python_test_root(test_cwd, cmd)
+    test_cwd = test_cwd or repo_path
+    repo_error = config.check_repo_path(test_cwd)
     if repo_error:
         _log(log_path, f"[tank] error: {repo_error}\n")
         return CommandResult(1, repo_error)
-    resolved = repo_context.format_test_command(cmd, repo_path)
-    test_env = repo_context.python_test_environ(repo_path)
+    resolved = repo_context.format_test_command(cmd, test_cwd)
+    test_env = repo_context.python_test_environ(test_cwd)
     _log(log_path, f"[tank] running tests: {resolved}\n")
-    _log(log_path, f"[tank] test cwd: {repo_path}\n")
+    _log(log_path, f"[tank] test cwd: {test_cwd}\n")
     if test_env.get("PYTHONPATH") and test_env.get("PYTHONPATH") != os.environ.get("PYTHONPATH"):
         _log(log_path, f"[tank] test PYTHONPATH: {test_env.get('PYTHONPATH')}\n")
-    run_target, use_shell = repo_context.prepare_test_execution(cmd, repo_path)
+    run_target, use_shell = repo_context.prepare_test_execution(cmd, test_cwd)
     try:
         result = subprocess.run(
             run_target,
-            cwd=repo_path,
+            cwd=test_cwd,
             shell=use_shell,
             capture_output=True,
             text=True,
             env=test_env,
         )
     except NotADirectoryError:
-        message = f"repository path is not a valid directory: {repo_path}"
+        message = f"repository path is not a valid directory: {test_cwd}"
         _log(log_path, f"[tank] error: {message}\n")
-        return CommandResult(1, message, cwd=repo_path, command=resolved)
+        return CommandResult(1, message, cwd=test_cwd, command=resolved)
     except OSError as exc:
         message = redact_command_output(str(exc))
         _log(log_path, f"[tank] error: {message}\n")
-        return CommandResult(1, message, cwd=repo_path, command=resolved)
+        return CommandResult(1, message, cwd=test_cwd, command=resolved)
     redacted_out = redact_command_output(result.stdout or "")
     redacted_err = redact_command_output(result.stderr or "")
     if redacted_out:
@@ -632,7 +653,7 @@ def _run_tests_tool(
     return CommandResult(
         result.returncode,
         _captured_streams(redacted_err, redacted_out),
-        cwd=repo_path,
+        cwd=test_cwd,
         command=resolved,
     )
 

@@ -430,18 +430,54 @@ def pytest_collection_path_hint(text: str, repo_path: str | None) -> str | None:
     """Detect pytest nodeids like `TankSacrifice/tests` that imply a wrong rootdir."""
     if not text or not repo_path:
         return None
-    repo_name = Path(repo_path).name
+    root = Path(repo_path)
+    repo_name = root.name
     if not repo_name:
         return None
-    pattern = re.compile(
+
+    # Case A: nodeid uses the workspace folder name (cwd already the repo, bad path arg).
+    self_pattern = re.compile(
         rf"\b{re.escape(repo_name)}[\\/](tests|test)(?:[\\/]\S*)?",
         re.I,
     )
-    match = pattern.search(text)
-    if not match:
+    match = self_pattern.search(text)
+    child_name = None
+    matched = match.group(0) if match else None
+
+    # Case B: workspace points at a parent folder; nodeid is Child/tests.
+    if matched is None:
+        nested = re.compile(
+            r"\b(?P<name>[A-Za-z_][\w.-]*)[\\/](?P<tail>tests|test)(?:[\\/\S]*)?",
+            re.I,
+        )
+        for nest_match in nested.finditer(text):
+            name = nest_match.group("name")
+            if not name or name.lower() == repo_name.lower():
+                continue
+            candidate = root / name
+            if candidate.is_dir() and (
+                (candidate / "app.py").is_file()
+                or (candidate / "tests").is_dir()
+                or (candidate / "main.py").is_file()
+            ):
+                child_name = name
+                matched = nest_match.group(0)
+                break
+
+    if not matched:
         return None
+
+    if child_name:
+        return (
+            f"Pytest reported collection path '{matched}' while the workspace cwd is "
+            f"'{repo_path}'. That usually means the workspace points at the parent of "
+            f"'{child_name}'. Point repo_path at '{child_name}' (where app.py / tests/ "
+            f"live), or resume after Tank rewrites the command to run inside that "
+            f"project. Prefer `pytest -q` without a '{child_name}/…' path prefix. "
+            f"Do not pip install '{child_name}' or 'app'."
+        )
     return (
-        f"Pytest reported collection path '{match.group(0)}', which usually means "
+        f"Pytest reported collection path '{matched}', which usually means "
         f"its rootdir is the parent of '{repo_name}'. Tank's workspace cwd should be "
         f"the repo root (where app.py / tests/ live). Prefer `pytest -q` or "
         f"`python -m pytest -q` without a '{repo_name}/…' path prefix, and keep "
