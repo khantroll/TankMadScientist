@@ -447,13 +447,118 @@ def test_resume_blocked_preserves_history():
     models.update_mission(mission_id, status=graph.BLOCKED_HUMAN, note=reason3)
     slug = models.get_workspace_by_id(ws)["slug"]
     html = tank_app.app.test_client().get(f"/workspaces/{slug}").get_data(as_text=True)
-    check("Resume from Run tests" in html, "UI exposes Resume from Run tests")
+    check("Resume from Run tests" in html or "Resume with fixed test context" in html,
+          "UI exposes Resume from Run tests")
     check("Mission Debrief" in html, "UI exposes Mission Debrief")
     check("No module named pytest" in html or "missing dependency" in html, "verification failure UX visible")
 
     arsenal_html = tank_app.app.test_client().get(f"/workspaces/{slug}/arsenal").get_data(as_text=True)
     check("Arsenal" in arsenal_html and "Assets" in arsenal_html and "Lessons" in arsenal_html,
           "Arsenal page separates Assets and Lessons")
+
+
+def test_circuit_breaker_import_context_resume_cta():
+    """Screenshot case: repeated error hash on app/TankSacrifice/tests → Resume CTA."""
+    print("\n== circuit breaker import-context Resume CTA ==")
+    ws = make_workspace("breaker-app")
+    mission_id, graph_id, scout_id = open_mission(ws, "breaker app import")
+    scout_run = models.create_run(ws, None, "scout", provider="local_qwen", mission_id=mission_id, stage_name="scout")
+    graph.record_attempt(scout_id, scout_run, "scout")
+    finish_run(scout_run)
+    seed_plan(graph_id)
+    builder = next(s for s in graph.list_steps(graph_id) if s["name"] == "Add JWT utils")
+    tester = next(s for s in graph.list_steps(graph_id) if s["name"] == "Run tests")
+    br = models.create_run(ws, None, "build", provider="local_qwen", mission_id=mission_id, stage_name="Add JWT utils")
+    graph.record_attempt(builder["id"], br, "execute")
+    finish_run(br, payload={"response_type": "plan", "summary": "built", "plan": "ok"})
+    with models.get_db() as conn:
+        conn.execute("UPDATE mad_scientist_steps SET status='done' WHERE id=?", (builder["id"],))
+
+    err = (
+        "Verification command exited 2: E ModuleNotFoundError: No module named 'app' "
+        f"ERROR {REPO.name}/tests - ModuleNotFoundError: No module named 'app'"
+    )
+    payload = {
+        "response_type": "plan",
+        "summary": "fail",
+        "plan": "",
+        "post_actions": {
+            "run_tests": True,
+            "test_command": f"python -m pytest {REPO.name}/tests -q",
+            "run_git_diff": False,
+        },
+        "tool_exit_code": 2,
+        "verification_cwd": str(REPO.parent),
+        "verification_command_resolved": f"python -m pytest {REPO.name}/tests -q",
+    }
+    t1 = models.create_run(ws, None, "t1", provider="local_qwen", mission_id=mission_id, stage_name="Run tests")
+    graph.record_attempt(tester["id"], t1, "execute")
+    finish_run(t1, status="failed", payload=payload, error=err)
+    t2 = models.create_run(
+        ws, None, "t2", provider="local_qwen", mission_id=mission_id, stage_name="Run tests",
+        parent_run_id=t1,
+    )
+    graph.record_attempt(tester["id"], t2, "fixer")
+    finish_run(t2, status="failed", payload=payload, error=err)
+
+    # Screenshot text: circuit breaker on repeated hash (legacy path).
+    raw_reason = graph.repeated_mistake_reason(tester["id"], graph.get_attempt_by_run(t2)["id"])
+    check(raw_reason is not None and "Repeated error hash" in raw_reason,
+          "circuit breaker detects repeated app import error")
+    enriched = mad_scientist._enrich_human_block_reason(raw_reason, models.get_run(t2), str(REPO))
+    check("Do not pip install 'app'" in enriched or "Resume" in enriched,
+          "enrichment adds Resume / no-pip-install guidance")
+    graph.block_step(tester["id"], enriched)
+    # Mission left running (as when a restarted scout is still inflight) — Resume must still show.
+    models.update_mission(mission_id, status="running", note=enriched)
+    graph.set_status(mission_id, "running", blocked_reason=None)
+
+    view = graph.mission_view(mission_id)
+    stuck = next(s for s in view["steps"] if s["id"] == tester["id"])
+    check(stuck.get("can_resume"), "blocked import-context step is resumable while mission is running")
+    check(stuck.get("import_context_stuck"), "import_context_stuck on circuit-breaker block")
+    check(view.get("can_resume_blocked"), "mission exposes Resume banner for breaker+import block")
+
+    import app as tank_app
+    slug = models.get_workspace_by_id(ws)["slug"]
+    html = tank_app.app.test_client().get(f"/workspaces/{slug}").get_data(as_text=True)
+    check("Resume with fixed test context" in html, "UI shows Resume with fixed test context")
+    check("IMPORT CONTEXT" in html or "import/execution-context" in html.lower(),
+          "UI shows import-context banner or hint")
+    check("Do not pip install" in html or "not a package to install" in html.lower(),
+          "UI forbids pip install app")
+    check("Repeated error hash" in html, "UI still shows circuit-breaker reason")
+
+    new_id = mad_scientist.resume_blocked_step(mission_id, step_id=tester["id"])
+    check(models.get_mission(mission_id)["status"] == "running", "resume clears breaker block")
+    check(models.get_run(new_id)["status"] in ("pending", "running"), "resume queues fresh execute")
+
+    # Live halt path also enriches when advance trips the breaker.
+    ws2 = make_workspace("breaker-live")
+    mid2, gid2, scout2 = open_mission(ws2, "live breaker")
+    sr2 = models.create_run(ws2, None, "scout", provider="local_qwen", mission_id=mid2, stage_name="scout")
+    graph.record_attempt(scout2, sr2, "scout")
+    finish_run(sr2)
+    seed_plan(gid2)
+    # Single builder step that fails twice with same non-import error → raw breaker.
+    # For import error, first advance blocks as import_context (preferred).
+    b2 = next(s for s in graph.list_steps(gid2) if s["name"] == "Add JWT utils")
+    t_live = next(s for s in graph.list_steps(gid2) if s["name"] == "Run tests")
+    with models.get_db() as conn:
+        conn.execute("UPDATE mad_scientist_steps SET status='done' WHERE id=?", (b2["id"],))
+    r1 = models.create_run(ws2, None, "r1", provider="local_qwen", mission_id=mid2, stage_name="Run tests")
+    graph.record_attempt(t_live["id"], r1, "execute")
+    finish_run(r1, status="failed", payload=payload, error=err)
+    mad_scientist.advance_mission(r1)
+    check(
+        graph.get_step(t_live["id"])["status"] == graph.BLOCKED_HUMAN,
+        "live advance blocks import_context on first failure",
+    )
+    check(
+        "import/execution-context" in (graph.get_step(t_live["id"])["blocked_reason"] or "").lower()
+        or "Do not pip install" in (graph.get_step(t_live["id"])["blocked_reason"] or ""),
+        "live import_context block reason guides Resume / no install",
+    )
 
 
 def test_pytest_repo_path_and_pythonpath():
@@ -846,6 +951,7 @@ def main():
     test_bulk_approval_mission_scoped()
     test_debrief_and_arsenal()
     test_resume_blocked_preserves_history()
+    test_circuit_breaker_import_context_resume_cta()
     test_pytest_repo_path_and_pythonpath()
     test_module_classification_and_install_gate()
     print()

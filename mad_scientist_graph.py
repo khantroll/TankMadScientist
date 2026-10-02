@@ -1060,11 +1060,27 @@ def mission_view(mission_id: int) -> dict | None:
                 and all(dep_id in done_ids for dep_id in dependency_ids(step["id"]))
             ),
             "import_context_stuck": bool(
-                latest_verification
-                and latest_verification.get("classification") == "import_context_failure"
-                and (
+                (
                     step["status"] == BLOCKED_HUMAN
                     or step["status"] == "awaiting_approval"
+                )
+                and (
+                    (
+                        latest_verification
+                        and latest_verification.get("classification")
+                        == "import_context_failure"
+                    )
+                    or (
+                        "No module named 'app'" in (failure_reason or "")
+                        and (
+                            "tests" in (failure_reason or "").lower()
+                            or "TankSacrifice" in (failure_reason or "")
+                        )
+                    )
+                    or (
+                        "import/execution-context" in (step["blocked_reason"] or "").lower()
+                        or "Do not pip install 'app'" in (step["blocked_reason"] or "")
+                    )
                 )
             ),
             "evaluation": (

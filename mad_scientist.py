@@ -1046,6 +1046,38 @@ def _downgrade_unverified_success(run):
     return models.get_run(run["id"])
 
 
+def _enrich_human_block_reason(reason: str, run, repo_path: str | None) -> str:
+    """Append Resume guidance when the breaker fired on an import-context failure."""
+    try:
+        import verification_display
+
+        view = verification_display.verification_view(run, repo_path=repo_path) or {}
+        try:
+            error = str(run["error"] or "")
+        except (TypeError, KeyError, IndexError):
+            error = ""
+        is_import = view.get("classification") == "import_context_failure"
+        if not is_import and (
+            "No module named 'app'" in error
+            or ("ModuleNotFoundError" in error and "/tests" in error.replace("\\", "/"))
+        ):
+            is_import = True
+        if not is_import:
+            return reason
+        diagnosis = (view.get("diagnosis") or "").strip()
+        guidance = (
+            " Import/execution-context failure (wrong pytest cwd/path) — "
+            "not a pip package. Click Resume from this step so Tank retries "
+            "with corrected pytest cwd/path/PYTHONPATH. Do not pip install 'app'."
+        )
+        text = f"{reason}{guidance}"
+        if diagnosis and diagnosis not in text:
+            text = f"{text} {diagnosis}"
+        return text
+    except Exception:
+        return reason
+
+
 def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_run_id) -> bool:
     """Apply breakers before queueing another attempt on this step.
 
@@ -1060,6 +1092,9 @@ def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_
     if attempt is not None:
         reason = graph.repeated_mistake_reason(step_row["id"], attempt["id"])
         if reason:
+            reason = _enrich_human_block_reason(
+                reason, run, workspace["repo_path"] if workspace else None
+            )
             graph.block_step(step_row["id"], reason)
             models.update_mission(mission["id"], note=reason)
             _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
@@ -1082,6 +1117,9 @@ def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_
     if count >= cap:
         reason = (
             f"Attempt cap reached on step '{step_row['name']}' ({count} of {cap})."
+        )
+        reason = _enrich_human_block_reason(
+            reason, run, workspace["repo_path"] if workspace else None
         )
         graph.block_step(step_row["id"], reason)
         models.update_mission(mission["id"], note=reason)

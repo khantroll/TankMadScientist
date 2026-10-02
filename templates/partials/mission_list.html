@@ -74,7 +74,13 @@
               {{ step.name }}
               {% if step.blocked_reason %}· {{ step.blocked_reason }}{% endif %}
             </p>
-            <button class="btn btn-sm btn-approve" type="submit">Resume from {{ step.name }}</button>
+            <button class="btn btn-sm btn-approve" type="submit">
+              {% if g.steps|selectattr('import_context_stuck')|selectattr('id', 'equalto', step.id)|list %}
+                Resume with fixed test context
+              {% else %}
+                Resume from {{ step.name }}
+              {% endif %}
+            </button>
           </form>
         {% endfor %}
       </div>
@@ -189,11 +195,26 @@
             <span class="mono">evaluation {{ step.evaluation.verdict }}</span>
           {% endif %}
           <span class="mono">{{ step.attempt_count }} attempt{{ 's' if step.attempt_count != 1 else '' }}</span>
+          {% if step.can_resume %}
+            <form class="inline-form mission-resume-step"
+                  hx-post="{{ url_for('resume_mad_scientist_step', slug=workspace.slug, mission_id=m.id) }}"
+                  hx-target="#mission-list"
+                  hx-swap="innerHTML">
+              <input type="hidden" name="step_id" value="{{ step.id }}">
+              <button class="btn btn-sm btn-approve" type="submit">
+                {% if step.import_context_stuck %}
+                  Resume with fixed test context
+                {% else %}
+                  Resume from {{ step.name }}
+                {% endif %}
+              </button>
+            </form>
+          {% endif %}
           {% if step.import_context_stuck %}
             <div class="graph-block-reason">
               This is an import/execution-context failure (e.g. <span class="mono">No module named 'app'</span> with
               <span class="mono">TankSacrifice/tests</span>) — not a package to install and usually not a code patch to Approve.
-              Prefer <strong>Resume from {{ step.name }}</strong> so Tank retries with corrected pytest cwd/path/PYTHONPATH.
+              Prefer <strong>Resume with fixed test context</strong> so Tank retries with corrected pytest cwd/path/PYTHONPATH.
               {% if step.approval_available %}Reject the fixer if you do not want that patch applied.{% endif %}
             </div>
           {% endif %}
@@ -205,21 +226,6 @@
             {% endfor %}
           {% elif step.approval_pending_without_payload %}
             <span class="graph-block-reason">Approval is waiting, but this run has no plan or patch payload.</span>
-          {% endif %}
-          {% if step.can_resume %}
-            <form class="inline-form"
-                  hx-post="{{ url_for('resume_mad_scientist_step', slug=workspace.slug, mission_id=m.id) }}"
-                  hx-target="#mission-list"
-                  hx-swap="innerHTML">
-              <input type="hidden" name="step_id" value="{{ step.id }}">
-              <button class="btn btn-sm btn-approve" type="submit">
-                {% if step.import_context_stuck and step.display_status == 'awaiting_approval' %}
-                  Resume with fixed test context
-                {% else %}
-                  Resume from {{ step.name }}
-                {% endif %}
-              </button>
-            </form>
           {% endif %}
           {% if step.blocked_reason %}
             <div class="graph-block-reason">{{ step.blocked_reason }}</div>
