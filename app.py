@@ -15,12 +15,14 @@ from flask import Flask, redirect, render_template, request, url_for, make_respo
 
 _log = logging.getLogger(__name__)
 
+import arsenal
 import config
 import git_sync
 import log_format
 import mad_scientist
 import mad_scientist_graph
 import mission
+import mission_debrief
 import models
 import pattern_synthesis
 import providers
@@ -279,6 +281,7 @@ def _mission_list_context(ws):
                 "runs": models.list_mission_runs(m["id"]),
                 "graph": mad_scientist_graph.mission_view(m["id"]),
                 "synthesis": pattern_synthesis.public_view(m["id"]),
+                "debrief": mission_debrief.build_debrief(m["id"]),
             }
             for m in missions
         ],
@@ -298,6 +301,10 @@ def api_version():
             "cancel_run",
             "delete_workspace",
             "resume_mission",
+            "resume_blocked_step",
+            "mission_bulk_approve",
+            "mission_debrief",
+            "arsenal",
             "mad_scientist",
             "mad_scientist_graph",
             "restart_sweep",
@@ -517,6 +524,8 @@ def run_list_partial(slug):
 
 
 def _render_run_output(run, payload=None):
+    import verification_display
+
     output = session_manager.tail_log(run["log_path"])
     if payload is None:
         payload = models.get_run_payload(run["id"])
@@ -527,6 +536,7 @@ def _render_run_output(run, payload=None):
         output=output,
         formatted=formatted,
         payload=payload,
+        verification=verification_display.verification_view(run),
     )
 
 
@@ -692,6 +702,30 @@ def approve_run_patch(run_id):
     return resp
 
 
+@app.route(
+    "/workspaces/<slug>/missions/<int:mission_id>/approve-all",
+    methods=["POST"],
+)
+def approve_mission_all(slug, mission_id):
+    """Approve every pending change for one mission (mission-scoped bulk)."""
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    mission_row = models.get_mission(mission_id)
+    if mission_row is None or mission_row["workspace_id"] != ws["id"]:
+        return "Mission not found", 404
+    try:
+        session_manager.approve_mission_pending(mission_id)
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+    resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
 @app.route("/runs/<int:run_id>/cancel", methods=["POST"], strict_slashes=False)
 def cancel_run_route(run_id):
     if not session_manager.cancel_run(run_id):
@@ -830,6 +864,44 @@ def retry_mad_scientist_scout(slug, mission_id):
     resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
     resp.headers["HX-Trigger"] = "runRefresh"
     return resp
+
+
+@app.route(
+    "/workspaces/<slug>/mad-scientist/<int:mission_id>/resume-step",
+    methods=["POST"],
+)
+def resume_mad_scientist_step(slug, mission_id):
+    """Resume a blocked Mad Scientist step without regenerating the plan."""
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    graph_mission = models.get_mad_scientist_mission_for_mission(mission_id)
+    if graph_mission is None or graph_mission["workspace_id"] != ws["id"]:
+        return "Mad Scientist mission not found for this workspace", 404
+    step_raw = (request.form.get("step_id") or "").strip()
+    step_id = int(step_raw) if step_raw.isdigit() else None
+    try:
+        mad_scientist.resume_blocked_step(mission_id, step_id=step_id)
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+    resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
+@app.route("/workspaces/<slug>/arsenal")
+def workspace_arsenal(slug):
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return "Workspace not found", 404
+    return render_template(
+        "arsenal.html",
+        workspace=ws,
+        arsenal=arsenal.arsenal_view(ws["id"]),
+    )
 
 
 @app.route("/workspaces/<slug>/missions/<int:mission_id>/resume", methods=["POST"])

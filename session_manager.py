@@ -380,6 +380,67 @@ def reject_run(run_id):
     return True
 
 
+def pending_approval_run_ids(mission_id: int) -> list[int]:
+    """Run ids awaiting approval for one mission, in ascending id order."""
+    import mad_scientist_graph as graph
+    import run_approval
+
+    view = graph.mission_view(mission_id)
+    if view and view.get("waiting_approvals"):
+        return [
+            int(item["run_id"])
+            for item in view["waiting_approvals"]
+            if item.get("run_id") is not None
+        ]
+    # Fallback for non-graph / template missions: scan mission runs.
+    ids = []
+    for run in models.list_mission_runs(mission_id, limit=200):
+        state = run_approval.approval_state(run)
+        if state.get("approval_available"):
+            ids.append(int(run["id"]))
+    ids.sort()
+    return ids
+
+
+def approve_mission_pending(mission_id: int) -> dict:
+    """Approve every pending change for one mission using approve_run semantics.
+
+    Mission-scoped only. Does not auto-approve future runs. Each approval is
+    audited through the same approve_run path as individual buttons.
+    """
+    mission_row = models.get_mission(mission_id)
+    if mission_row is None:
+        raise ValueError("Mission not found")
+    run_ids = pending_approval_run_ids(mission_id)
+    approved = []
+    failed = []
+    for run_id in run_ids:
+        # Re-check: advancing an earlier run may change later statuses.
+        run = models.get_run(run_id)
+        if run is None or run["status"] != "awaiting_approval":
+            continue
+        if run["mission_id"] != mission_id:
+            failed.append({"run_id": run_id, "reason": "cross-mission skipped"})
+            continue
+        if approve_run(run_id):
+            approved.append(run_id)
+            log_path = run["log_path"]
+            if log_path:
+                local_agent._log(
+                    log_path,
+                    "\n[tank] approved via mission bulk approve\n",
+                )
+        else:
+            failed.append({"run_id": run_id, "reason": "approve_run returned false"})
+    return {
+        "mission_id": mission_id,
+        "requested": run_ids,
+        "approved": approved,
+        "failed": failed,
+        "approved_count": len(approved),
+    }
+
+
 def tail_log(log_path, max_lines=None):
     if not log_path or not os.path.exists(log_path):
         return ""

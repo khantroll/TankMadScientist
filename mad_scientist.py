@@ -853,6 +853,17 @@ def _block_graph_mission(mission, plan: dict, run, reason: str, step_id: int | N
             finished_at=_now(),
             error=reason,
         )
+    try:
+        import arsenal
+
+        arsenal.record_verification_lesson(
+            mission["workspace_id"],
+            run,
+            mission_id=mission["id"],
+            blocked_reason=reason,
+        )
+    except Exception:
+        pass
     _store_memory(mission["workspace_id"], mission, plan, run)
 
 
@@ -1036,10 +1047,22 @@ def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_
             graph.block_step(step_row["id"], reason)
             models.update_mission(mission["id"], note=reason)
             _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+            try:
+                import arsenal
+
+                arsenal.record_verification_lesson(
+                    workspace["id"],
+                    run,
+                    mission_id=mission["id"],
+                    blocked_reason=reason,
+                )
+            except Exception:
+                pass
             _continue_graph(workspace, mission, graph_row, plan, run, fallback_run_id)
             return True
     cap = graph.attempt_cap(graph_row)
-    count = graph.count_attempts(step_row["id"])
+    epoch = graph.step_breaker_epoch(step_row)
+    count = graph.count_attempts(step_row["id"], epoch=epoch)
     if count >= cap:
         reason = (
             f"Attempt cap reached on step '{step_row['name']}' ({count} of {cap})."
@@ -1047,6 +1070,17 @@ def _halt_before_next_attempt(workspace, mission, plan, run, step_row, fallback_
         graph.block_step(step_row["id"], reason)
         models.update_mission(mission["id"], note=reason)
         _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+        try:
+            import arsenal
+
+            arsenal.record_verification_lesson(
+                workspace["id"],
+                run,
+                mission_id=mission["id"],
+                blocked_reason=reason,
+            )
+        except Exception:
+            pass
         _continue_graph(workspace, mission, graph_row, plan, run, fallback_run_id)
         return True
     return False
@@ -1183,7 +1217,18 @@ def _advance_graph_locked(run, mission) -> bool:
             )
             return True
         mission = models.get_mission(mission["id"])
-        _log_pattern_synthesis(mission, pattern_synthesis.bind_plan(workspace, mission, plan))
+        synthesis = pattern_synthesis.bind_plan(workspace, mission, plan)
+        _log_pattern_synthesis(mission, synthesis)
+        try:
+            import arsenal
+
+            arsenal.record_synthesis_lessons(
+                workspace["id"],
+                mission["id"],
+                pattern_synthesis.public_view(mission["id"]),
+            )
+        except Exception:
+            pass
         return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
 
     if kind == "fixer":
@@ -1211,6 +1256,71 @@ def _advance_graph_locked(run, mission) -> bool:
         return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
 
     return _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
+
+
+def resume_blocked_step(mission_id: int, step_id: int | None = None) -> int:
+    """Resume a blocked graph step without regenerating the mission plan.
+
+    Preserves completed steps and attempt history. Bumps the step breaker
+    epoch so circuit breakers apply fresh to the resumed cycle, then queues
+    a new execute attempt on that step.
+    """
+    mission = models.get_mission(mission_id)
+    if mission is None or mission["template"] != TEMPLATE_ID:
+        raise ValueError("Mad Scientist mission not found")
+    if not graph.has_graph(mission_id):
+        raise ValueError("Mission has no durable graph")
+    workspace = models.get_workspace_by_id(mission["workspace_id"])
+    if workspace is None:
+        raise ValueError("Workspace not found")
+
+    resumable = graph.resumable_blocked_steps(mission_id)
+    if not resumable:
+        raise ValueError("No blocked step is ready to resume")
+    target = None
+    if step_id is not None:
+        target = next((item for item in resumable if item["id"] == step_id), None)
+        if target is None:
+            raise ValueError("That blocked step cannot be resumed yet")
+    else:
+        target = resumable[0]
+
+    epoch = graph.unblock_step_for_resume(target["id"])
+    models.update_mission(
+        mission_id,
+        status="running",
+        current_stage=target["name"],
+        note=f"Resumed from '{target['name']}' (breaker epoch {epoch})",
+    )
+    graph.set_status(mission_id, "running", blocked_reason=None)
+    if mission["parent_run_id"]:
+        parent = models.get_run(mission["parent_run_id"])
+        if parent is not None and parent["status"] in ("failed", "done", "cancelled"):
+            models.update_run(
+                mission["parent_run_id"],
+                status="running",
+                error=None,
+                finished_at=None,
+            )
+
+    mission = models.get_mission(mission_id)
+    parent_id = graph.newest_dependency_run_id(target["id"]) or mission["parent_run_id"]
+    run_id = _create_step_attempt(
+        workspace,
+        mission,
+        graph.get_step(target["id"]),
+        parent_id,
+        "execute",
+    )
+    _append_parent_log(
+        mission,
+        f"[tank] resumed blocked step '{target['name']}' "
+        f"epoch={epoch} run=#{run_id}",
+    )
+    import session_manager
+
+    session_manager.launch_pending()
+    return run_id
 
 
 def retry_scout(mission_id: int) -> int:

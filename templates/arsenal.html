@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Tank — Arsenal · {{ workspace.name }}{% endblock %}
+{% block content %}
+  <p style="margin-top:-6px;">
+    <a href="{{ url_for('workspace_detail', slug=workspace.slug) }}" style="color:var(--text-muted); font-size:13px; text-decoration:none;">← {{ workspace.name }}</a>
+  </p>
+  <h2 style="margin:4px 0 2px;">Arsenal</h2>
+  <p class="form-hint" style="margin:0 0 16px;">
+    Reusable capabilities and learned facts for <strong>{{ workspace.name }}</strong>.
+    Assets are durable specialists, crews, and recipes. Lessons are contextual facts that may affect later missions.
+  </p>
+
+  <div class="arsenal-layout">
+    <section class="panel arsenal-panel">
+      <h3>Assets <span class="mono dim">({{ arsenal.asset_count }})</span></h3>
+      {% if not arsenal.assets %}
+        <p class="empty-state">No durable assets yet. Confirm a generated crew or complete a Lab mission to populate this list.</p>
+      {% else %}
+        <ul class="arsenal-list">
+          {% for asset in arsenal.assets %}
+          <li class="arsenal-item">
+            <div class="arsenal-item-head">
+              <span class="arsenal-type">{{ asset.type }}</span>
+              <strong>{{ asset.name }}</strong>
+              {% if asset.generated_vs_reused %}
+                <span class="mono dim">{{ asset.generated_vs_reused }}</span>
+              {% endif %}
+            </div>
+            {% if asset.description %}
+              <p>{{ asset.description }}</p>
+            {% endif %}
+            <div class="arsenal-meta mono">
+              {% if asset.origin %}origin: {{ asset.origin }}{% endif %}
+              {% if asset.provider %} · provider: {{ asset.provider }}{% endif %}
+              {% if asset.identifier %} · id: {{ asset.identifier }}{% endif %}
+              {% if asset.roles %} · roles: {{ asset.roles | join(', ') }}{% endif %}
+              · used {{ asset.use_count or 0 }}
+              {% if asset.last_used_at %} · last used {{ asset.last_used_at }}{% endif %}
+              {% if asset.last_success_at %} · last success {{ asset.last_success_at }}{% endif %}
+              {% if asset.last_mission_id %} · mission #{{ asset.last_mission_id }}{% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section class="panel arsenal-panel">
+      <h3>Lessons <span class="mono dim">({{ arsenal.lesson_count }})</span></h3>
+      {% if not arsenal.lessons %}
+        <p class="empty-state">No lessons recorded yet. Verification failures, circuit breaks, and Pattern Synthesis decisions land here.</p>
+      {% else %}
+        <ul class="arsenal-list">
+          {% for lesson in arsenal.lessons %}
+          <li class="arsenal-item">
+            <div class="arsenal-item-head">
+              <span class="arsenal-type arsenal-type--lesson">{{ lesson.category }}</span>
+              {% if lesson.ephemeral %}<span class="mono dim">from memory</span>{% endif %}
+            </div>
+            <p>{{ lesson.text }}</p>
+            <div class="arsenal-meta mono">
+              source: {{ lesson.source }}
+              {% if lesson.mission_id %} · mission #{{ lesson.mission_id }}{% endif %}
+              {% if lesson.run_id %} · run #{{ lesson.run_id }}{% endif %}
+              · seen {{ lesson.use_count or 1 }}
+              {% if lesson.last_seen_at %} · {{ lesson.last_seen_at }}{% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}
