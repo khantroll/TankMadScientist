@@ -965,7 +965,8 @@ def mission_view(mission_id: int) -> dict | None:
     waiting_approvals = []
     for step in raw_steps:
         attempts = [_attempt_public(item) for item in list_attempts(step["id"])]
-        actionable = next((item for item in reversed(attempts) if item["approval_available"]), None)
+        actionable_attempts = [item for item in attempts if item["approval_available"]]
+        actionable = actionable_attempts[-1] if actionable_attempts else None
         awaiting = next(
             (
                 item for item in reversed(attempts)
@@ -980,8 +981,7 @@ def mission_view(mission_id: int) -> dict | None:
             if item.get("status") in ("failed", "rejected") and item.get("error"):
                 failure_reason = item["error"]
                 break
-        if actionable is not None:
-            waiting_approvals.append(actionable)
+        waiting_approvals.extend(actionable_attempts)
         latest_verification = None
         for item in reversed(attempts):
             if item.get("verification"):

@@ -191,7 +191,10 @@ def test_bulk_approval_mission_scoped():
 
     pending = session_manager.pending_approval_run_ids(mission_id)
     check(r4 in pending and r6 in pending, "pending approvals listed for mission")
+    check(len(pending) >= 2, "pending approval count includes every awaiting run")
     check(other_run not in pending, "pending approvals do not cross mission boundaries")
+    view = graph.mission_view(mission_id)
+    check(view["waiting_approval_count"] == len(pending), "mission_view pending count matches run list")
 
     result = session_manager.approve_mission_pending(mission_id)
     check(result["approved_count"] >= 2, "mission bulk approve approved pending runs")
