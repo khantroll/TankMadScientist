@@ -31,6 +31,7 @@ os.environ["TANK_MAX_PARALLEL_RUNS_PER_MISSION"] = "0"
 
 import arsenal  # noqa: E402
 import dependency_recovery  # noqa: E402
+import local_agent  # noqa: E402
 import mad_scientist  # noqa: E402
 import mad_scientist_graph as graph  # noqa: E402
 import mission_debrief  # noqa: E402
@@ -455,6 +456,49 @@ def test_resume_blocked_preserves_history():
           "Arsenal page separates Assets and Lessons")
 
 
+def test_pytest_repo_path_and_pythonpath():
+    print("\n== pytest path / PYTHONPATH context ==")
+    import repo_context
+
+    (REPO / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    tests = REPO / "tests"
+    tests.mkdir(exist_ok=True)
+    (tests / "test_app.py").write_text("import app\n\ndef test_value():\n    assert app.VALUE == 1\n", encoding="utf-8")
+
+    rewritten = repo_context.normalize_pytest_repo_paths(
+        f"python -m pytest {REPO.name}/tests -q",
+        str(REPO),
+    )
+    check(
+        f"{REPO.name}/tests" not in rewritten and "tests" in rewritten,
+        "strips mistaken RepoName/tests path prefix from pytest command",
+    )
+    env = repo_context.python_test_environ(str(REPO), base={})
+    check(
+        str(REPO.resolve()) in (env.get("PYTHONPATH") or ""),
+        "flat app.py repos put repo root on PYTHONPATH for tests",
+    )
+
+    # Reproduce the dogfood nodeid diagnosis text.
+    err = (
+        "Verification command exited 2: E ModuleNotFoundError: No module named 'app' "
+        f"=========================== short test summary info =========================== "
+        f"ERROR {REPO.name}/tests - ModuleNotFoundError: No module named 'app"
+    )
+    hint = verification_display.pytest_collection_path_hint(err, str(REPO))
+    check(hint is not None and "rootdir" in hint.lower(), "diagnoses TankSacrifice/tests rootdir mismatch")
+    check("do not pip install" in hint.lower() or "Do not pip install" in hint, "diagnosis forbids pip install app")
+
+    # Running tests with PYTHONPATH should import app even from a parent cwd collection style.
+    code = local_agent._run_tests_tool(
+        str(REPO),
+        {"run_tests": True, "test_command": "python -m pytest -q", "run_git_diff": False},
+        str(Path(TMP) / "pytest-path.log"),
+    )
+    check(int(code) == 0, "pytest succeeds for flat app.py with Tank test env")
+    check(getattr(code, "cwd", "") == str(REPO), "test tool records repo cwd")
+
+
 def test_module_classification_and_install_gate():
     print("\n== local vs third-party + install gate ==")
     (REPO / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\n", encoding="utf-8")
@@ -622,6 +666,7 @@ def main():
     test_bulk_approval_mission_scoped()
     test_debrief_and_arsenal()
     test_resume_blocked_preserves_history()
+    test_pytest_repo_path_and_pythonpath()
     test_module_classification_and_install_gate()
     print()
     if FAILURES:

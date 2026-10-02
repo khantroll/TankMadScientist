@@ -346,6 +346,34 @@ def _pytest_module_command(python: str, tail: str) -> str:
     return f"{quoted} -m pytest"
 
 
+_PYTHON_M_PYTEST_RE = re.compile(
+    r'^(?P<py>"[^"]+"|[^\s]+)\s+-m\s+pytest(?P<tail>\s+.*)?\s*$',
+    re.IGNORECASE,
+)
+
+
+def normalize_python_m_pytest_command(cmd: str, repo_path: str | None = None) -> str:
+    """Normalize `python -m pytest` onto a launcher that exists on PATH.
+
+    Does not redirect an explicit interpreter into a venv. Only rewrites bare
+    `python` / `python3` / `py` when that launcher is missing.
+    """
+    del repo_path  # reserved for future venv-aware explicit launches
+    text = (cmd or "").strip()
+    match = _PYTHON_M_PYTEST_RE.match(text)
+    if not match:
+        return text
+    tail = (match.group("tail") or "").strip()
+    py = match.group("py").strip().strip('"')
+    if py == "python" and not shutil.which("python"):
+        return _pytest_module_command(_module_python(), tail)
+    if py == "python3" and not shutil.which("python3") and shutil.which("python"):
+        return _pytest_module_command("python", tail)
+    if py == "py" and not shutil.which("py"):
+        return _pytest_module_command(_module_python(), tail)
+    return text
+
+
 def normalize_bare_pytest_command(cmd: str, repo_path: str | None = None) -> str:
     """Rewrite bare pytest so verification works when pytest is not on PATH.
 
@@ -353,9 +381,11 @@ def normalize_bare_pytest_command(cmd: str, repo_path: str | None = None) -> str
     arguments. A workspace `.venv` or `venv` interpreter is preferred when
     one is present. When pytest is already on PATH and the repo has no venv,
     the original command is kept so an existing pytest entry point still runs.
-    `python -m pytest` and every non-pytest command are returned unchanged.
-    This does not install packages into the patient repo.
+    Explicit `python -m pytest` is rewritten onto a runnable interpreter when
+    bare `python` is missing. This does not install packages into the patient repo.
     """
+    cmd = normalize_pytest_repo_paths(cmd, repo_path)
+    cmd = normalize_python_m_pytest_command(cmd, repo_path)
     tail = _bare_pytest_tail(cmd)
     if tail is None:
         return cmd
@@ -365,6 +395,67 @@ def normalize_bare_pytest_command(cmd: str, repo_path: str | None = None) -> str
     if shutil.which("pytest"):
         return cmd
     return _pytest_module_command(_module_python(), tail)
+
+
+def normalize_pytest_repo_paths(cmd: str, repo_path: str | None = None) -> str:
+    """Rewrite mistaken `RepoName/tests` path args when cwd is already the repo.
+
+    Models sometimes emit `pytest TankSacrifice/tests` while Tank's cwd is
+    already `…/TankSacrifice`. That makes pytest treat the parent as rootdir
+    and breaks `import app`. When the path prefix matches the repo folder
+    name, strip it so collection stays inside the workspace root.
+    """
+    text = (cmd or "").strip()
+    if not text or not repo_path:
+        return text
+    repo_name = Path(repo_path).name
+    if not repo_name or "pytest" not in text.lower():
+        return text
+    # TankSacrifice/tests or TankSacrifice\tests → tests
+    text = re.sub(
+        rf"(^|\s){re.escape(repo_name)}[\\/]",
+        r"\1",
+        text,
+    )
+    parts = []
+    for part in text.split():
+        if part in {repo_name, repo_name + "/", repo_name + "\\"}:
+            parts.append(".")
+        else:
+            parts.append(part)
+    return " ".join(parts)
+
+
+def has_flat_python_app_module(repo_path: str | None) -> bool:
+    """True when the repo root exposes a common importable app module."""
+    if not repo_path:
+        return False
+    root = Path(repo_path)
+    for name in ("app.py", "main.py", "wsgi.py", "asgi.py"):
+        if (root / name).is_file():
+            return True
+    for name in ("app", "src"):
+        if (root / name / "__init__.py").is_file():
+            return True
+    return False
+
+
+def python_test_environ(repo_path: str | None, base: dict | None = None) -> dict:
+    """Environment for Python verification.
+
+    When the patient repo has a flat app module at the root, put that root on
+    PYTHONPATH so `import app` works even if pytest's rootdir discovery walks
+    upward. Existing PYTHONPATH entries are preserved.
+    """
+    env = dict(base if base is not None else os.environ)
+    if not repo_path or not has_flat_python_app_module(repo_path):
+        return env
+    root = str(Path(repo_path).resolve())
+    current = env.get("PYTHONPATH", "")
+    parts = [part for part in current.split(os.pathsep) if part]
+    if root not in parts:
+        env["PYTHONPATH"] = root + (os.pathsep + current if current else "")
+    return env
 
 
 def prepare_test_execution(
@@ -525,7 +616,8 @@ def resolve_test_command(
             chosen = detected
     if not chosen:
         return None
-    return normalize_bare_pytest_command(str(chosen).strip(), repo_path)
+    chosen = normalize_pytest_repo_paths(str(chosen).strip(), repo_path)
+    return normalize_bare_pytest_command(chosen, repo_path)
 
 
 def format_project_profile_section(

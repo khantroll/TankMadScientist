@@ -599,8 +599,11 @@ def _run_tests_tool(
         _log(log_path, f"[tank] error: {repo_error}\n")
         return CommandResult(1, repo_error)
     resolved = repo_context.format_test_command(cmd, repo_path)
+    test_env = repo_context.python_test_environ(repo_path)
     _log(log_path, f"[tank] running tests: {resolved}\n")
     _log(log_path, f"[tank] test cwd: {repo_path}\n")
+    if test_env.get("PYTHONPATH") and test_env.get("PYTHONPATH") != os.environ.get("PYTHONPATH"):
+        _log(log_path, f"[tank] test PYTHONPATH: {test_env.get('PYTHONPATH')}\n")
     run_target, use_shell = repo_context.prepare_test_execution(cmd, repo_path)
     try:
         result = subprocess.run(
@@ -609,6 +612,7 @@ def _run_tests_tool(
             shell=use_shell,
             capture_output=True,
             text=True,
+            env=test_env,
         )
     except NotADirectoryError:
         message = f"repository path is not a valid directory: {repo_path}"

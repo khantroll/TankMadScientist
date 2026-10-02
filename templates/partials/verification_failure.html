@@ -29,5 +29,8 @@
         Tank reads this as a local import/execution-context issue, not a package to install.
       </div>
     {% endif %}
+    {% if verification.diagnosis %}
+      <div class="form-hint" style="margin-top:6px;">{{ verification.diagnosis }}</div>
+    {% endif %}
   </div>
 {% endif %}

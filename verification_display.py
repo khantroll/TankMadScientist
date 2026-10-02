@@ -396,6 +396,18 @@ def verification_view(run, *, repo_path: str | None = None) -> dict | None:
     if installable:
         install_command = build_install_command(interpreter, module)
     local_paths = local_module_paths(repo_path or cwd, module) if module else []
+    diagnosis = pytest_collection_path_hint(error, repo_path or cwd)
+    if not diagnosis and kind == "import_context_failure" and module:
+        if local_paths:
+            diagnosis = (
+                f"Local module '{module}' exists at {', '.join(local_paths)}. "
+                "Fix the test import or pytest rootdir/pythonpath — do not pip install it."
+            )
+        else:
+            diagnosis = (
+                f"Local module '{module}' is missing from the repo root. Create/fix the "
+                "application module or correct the test import — do not pip install it."
+            )
     return {
         "command": command or str(post.get("test_command") or "").strip() or None,
         "cwd": cwd,
@@ -410,7 +422,32 @@ def verification_view(run, *, repo_path: str | None = None) -> dict | None:
         "local_module_paths": local_paths,
         "layout": repo_layout_snapshot(repo_path or cwd, limit=24),
         "import_sites": module_imported_in_repo(repo_path or cwd, module) if module else [],
+        "diagnosis": diagnosis,
     }
+
+
+def pytest_collection_path_hint(text: str, repo_path: str | None) -> str | None:
+    """Detect pytest nodeids like `TankSacrifice/tests` that imply a wrong rootdir."""
+    if not text or not repo_path:
+        return None
+    repo_name = Path(repo_path).name
+    if not repo_name:
+        return None
+    pattern = re.compile(
+        rf"\b{re.escape(repo_name)}[\\/](tests|test)(?:[\\/]\S*)?",
+        re.I,
+    )
+    match = pattern.search(text)
+    if not match:
+        return None
+    return (
+        f"Pytest reported collection path '{match.group(0)}', which usually means "
+        f"its rootdir is the parent of '{repo_name}'. Tank's workspace cwd should be "
+        f"the repo root (where app.py / tests/ live). Prefer `pytest -q` or "
+        f"`python -m pytest -q` without a '{repo_name}/…' path prefix, and keep "
+        f"`import app` resolving from the repo root. Do not pip install '{repo_name}' "
+        f"or 'app'."
+    )
 
 
 def fixer_failure_context(run, *, repo_path: str | None = None, max_chars: int = 3500) -> str:
@@ -443,6 +480,8 @@ def fixer_failure_context(run, *, repo_path: str | None = None, max_chars: int =
                 "Do NOT treat it as a pip package to install. Inspect tests, app layout, "
                 "and working directory. Make the smallest correct change."
             )
+    if view.get("diagnosis"):
+        lines.append(f"- diagnosis: {view['diagnosis']}")
     if view.get("local_module_paths"):
         lines.append("- local paths for that module: " + ", ".join(view["local_module_paths"]))
     if view.get("import_sites"):

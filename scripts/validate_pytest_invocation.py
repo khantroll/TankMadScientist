@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -170,16 +171,22 @@ def test_command_resolution() -> None:
                 "a Python repo keeps suggesting pytest -q when pytest is on PATH",
             )
 
-        check(
-            repo_context.normalize_bare_pytest_command("python -m pytest -q", str(root))
-            == "python -m pytest -q",
-            "python -m pytest -q is left unchanged",
-        )
-        check(
-            repo_context.normalize_bare_pytest_command("py -m pytest -q", str(root))
-            == "py -m pytest -q",
-            "py -m pytest -q is left unchanged",
-        )
+        python_m = repo_context.normalize_bare_pytest_command("python -m pytest -q", str(root))
+        if shutil.which("python"):
+            check(python_m == "python -m pytest -q", "python -m pytest -q is left unchanged")
+        else:
+            check(
+                python_m.endswith("-m pytest -q") and "python" in python_m,
+                "python -m pytest -q is rewritten onto an available launcher",
+            )
+        py_m = repo_context.normalize_bare_pytest_command("py -m pytest -q", str(root))
+        if shutil.which("py"):
+            check(py_m == "py -m pytest -q", "py -m pytest -q is left unchanged")
+        else:
+            check(
+                py_m.endswith("-m pytest -q"),
+                "py -m pytest -q is rewritten onto an available launcher",
+            )
         check(
             repo_context.normalize_bare_pytest_command("/usr/bin/pytest -q", str(root))
             == "/usr/bin/pytest -q",
