@@ -30,6 +30,7 @@ os.environ["TANK_MAX_PARALLEL_RUNS"] = "0"
 os.environ["TANK_MAX_PARALLEL_RUNS_PER_MISSION"] = "0"
 
 import arsenal  # noqa: E402
+import dependency_recovery  # noqa: E402
 import mad_scientist  # noqa: E402
 import mad_scientist_graph as graph  # noqa: E402
 import mission_debrief  # noqa: E402
@@ -454,11 +455,174 @@ def test_resume_blocked_preserves_history():
           "Arsenal page separates Assets and Lessons")
 
 
+def test_module_classification_and_install_gate():
+    print("\n== local vs third-party + install gate ==")
+    (REPO / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\n", encoding="utf-8")
+    (REPO / "requirements.txt").write_text("Flask==3.0.3\nPyJWT==2.9.0\n", encoding="utf-8")
+
+    pytest_err = r"C:\Program Files\Python314\python.exe: No module named pytest"
+    app_err = "ModuleNotFoundError: No module named 'app'"
+
+    check(
+        verification_display.classify_verification_failure(
+            pytest_err,
+            r"C:\Program Files\Python314\python.exe -m pytest -q",
+            repo_path=str(REPO),
+        ) == "missing_dependency",
+        "No module named pytest → missing_dependency",
+    )
+    check(
+        verification_display.is_installable_module(str(REPO), "pytest") is True,
+        "pytest is installable",
+    )
+    check(
+        verification_display.classify_verification_failure(
+            app_err,
+            r"C:\Program Files\Python314\python.exe -m pytest -q",
+            repo_path=str(REPO),
+        ) == "import_context_failure",
+        "No module named app → import_context_failure",
+    )
+    check(
+        verification_display.is_installable_module(str(REPO), "app") is False,
+        "local app module is not installable",
+    )
+    check(
+        verification_display.is_local_project_module(str(REPO), "app") is True,
+        "app is detected as local project module",
+    )
+
+    ws = make_workspace("install-gate")
+    mission_id, graph_id, scout_id = open_mission(ws, "jwt install gate")
+    scout_run = models.create_run(ws, None, "scout", provider="local_qwen", mission_id=mission_id, stage_name="scout")
+    graph.record_attempt(scout_id, scout_run, "scout")
+    finish_run(scout_run)
+    seed_plan(graph_id)
+    builder = next(s for s in graph.list_steps(graph_id) if s["name"] == "Add JWT utils")
+    tester = next(s for s in graph.list_steps(graph_id) if s["name"] == "Run tests")
+    br = models.create_run(ws, None, "build", provider="local_qwen", mission_id=mission_id, stage_name="Add JWT utils")
+    graph.record_attempt(builder["id"], br, "execute")
+    finish_run(br, payload={"response_type": "plan", "summary": "built", "plan": "ok"})
+    with models.get_db() as conn:
+        conn.execute("UPDATE mad_scientist_steps SET status='done' WHERE id=?", (builder["id"],))
+
+    # Missing pytest should attach install offer and block instead of queuing a fixer.
+    tr = models.create_run(ws, None, "test", provider="local_qwen", mission_id=mission_id, stage_name="Run tests")
+    graph.record_attempt(tester["id"], tr, "execute")
+    payload = {
+        "response_type": "plan",
+        "summary": "tests",
+        "plan": "",
+        "post_actions": {
+            "run_tests": True,
+            "test_command": r"C:\Program Files\Python314\python.exe -m pytest -q",
+            "run_git_diff": False,
+        },
+        "tool_exit_code": 1,
+        "verification_cwd": str(REPO),
+        "verification_command_resolved": r"C:\Program Files\Python314\python.exe -m pytest -q",
+    }
+    models.update_run(
+        tr,
+        status="failed",
+        agent_payload=json.dumps(payload),
+        finished_at=models._now(),
+        error=f"Verification command exited 1: {pytest_err}",
+        log_path=str(Path(TMP) / "install-gate.log"),
+    )
+    Path(TMP, "install-gate.log").write_text("", encoding="utf-8")
+    graph.sync_run_status(tr)
+    graph.record_attempt_usage(tr)
+    mad_scientist.advance_mission(tr)
+
+    offer = dependency_recovery.attach_install_offer(tr, str(REPO))
+    check(offer is not None and offer["module"] == "pytest", "missing pytest produces install offer")
+    check("pip install" in (offer.get("install_command") or ""), "install command uses pip")
+    check(
+        "Python314" in (offer.get("install_command") or "")
+        or "Python314" in (offer.get("interpreter") or ""),
+        "install command uses failing interpreter when possible",
+    )
+    step = graph.get_step(tester["id"])
+    # advance_mission should have blocked for install rather than queued a fixer
+    attempts = graph.list_attempts(tester["id"])
+    check(
+        step["status"] == graph.BLOCKED_HUMAN
+        or any((models.get_run_payload(a["run_id"]) or {}).get("install_offer") for a in attempts),
+        "installable failure stays approval-gated (blocked or offer stored)",
+    )
+    check(
+        not any(a["attempt_kind"] == "fixer" for a in attempts),
+        "installable missing pytest does not auto-queue fixer",
+    )
+
+    # Refuse installing local module 'app'
+    app_run = models.create_run(ws, None, "appfail", provider="local_qwen", mission_id=mission_id, stage_name="Run tests")
+    graph.record_attempt(tester["id"], app_run, "retry")
+    app_payload = dict(payload)
+    models.update_run(
+        app_run,
+        status="failed",
+        agent_payload=json.dumps(app_payload),
+        finished_at=models._now(),
+        error=f"Verification command exited 1: {app_err}",
+    )
+    graph.sync_run_status(app_run)
+    no_offer = dependency_recovery.attach_install_offer(app_run, str(REPO))
+    check(no_offer is None, "local module app does not produce install offer")
+    view = verification_display.verification_view(models.get_run(app_run), repo_path=str(REPO))
+    check(view["classification"] == "import_context_failure", "app failure classified as import context")
+    check(view.get("cwd") == str(REPO), "verification view includes working directory")
+    check(view.get("installable") is False, "app failure is not installable")
+
+    # Fixer context includes cwd + import guidance
+    fixer = mad_scientist._fixer_step(
+        {"name": "Run tests", "task": "run tests", "provider": "local_qwen"},
+        models.get_run(app_run),
+        1,
+        3,
+    )
+    check("working_directory" in fixer["task"], "fixer receives working directory")
+    check("import/execution-context" in fixer["task"] or "local project" in fixer["task"],
+          "fixer receives import-context guidance")
+    check("Do NOT treat it as a pip package" in fixer["task"] or "must not" in fixer["task"].lower()
+          or "Do not invent a pip install" in fixer["task"],
+          "fixer told not to pip-install local modules")
+
+    prior = __import__("run_chain").build_prior_context(app_run)
+    check(prior and "working_directory" in prior, "prior context includes verification cwd/diagnostics")
+
+    # Refusing install of app via API helper
+    try:
+        dependency_recovery.run_approved_install(mission_id, tester["id"], module="app")
+        check(False, "install of local app should raise")
+    except ValueError as exc:
+        check("local" in str(exc).lower() or "refusing" in str(exc).lower(),
+              "installation remains refused for local modules")
+
+    # UI surfaces install controls for pytest offer
+    graph.block_step(tester["id"], "Missing dependency 'pytest'")
+    graph.block_mission(mission_id, "Missing dependency 'pytest'")
+    models.update_mission(mission_id, status=graph.BLOCKED_HUMAN, note="Missing pytest")
+    dependency_recovery.attach_install_offer(tr, str(REPO))
+    import app as tank_app
+    slug = models.get_workspace_by_id(ws)["slug"]
+    html = tank_app.app.test_client().get(f"/workspaces/{slug}").get_data(as_text=True)
+    check("Install pytest and retry" in html or "Install pytest" in html,
+          "UI shows Install pytest and retry")
+    check("Working directory" in html or str(REPO) in html,
+          "UI shows working directory on verification failure")
+    check("import / execution context" in html or "import_context" in html or "local import" in html.lower()
+          or "Missing module" in html,
+          "UI shows classification / missing-module diagnostics")
+
+
 def main():
     models.init_db()
     test_bulk_approval_mission_scoped()
     test_debrief_and_arsenal()
     test_resume_blocked_preserves_history()
+    test_module_classification_and_install_gate()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} failure(s):")
@@ -467,6 +631,7 @@ def main():
         return 1
     print("all observability checks passed")
     return 0
+
 
 
 if __name__ == "__main__":

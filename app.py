@@ -17,6 +17,7 @@ _log = logging.getLogger(__name__)
 
 import arsenal
 import config
+import dependency_recovery
 import git_sync
 import log_format
 import mad_scientist
@@ -305,6 +306,7 @@ def api_version():
             "mission_bulk_approve",
             "mission_debrief",
             "arsenal",
+            "dependency_install",
             "mad_scientist",
             "mad_scientist_graph",
             "restart_sweep",
@@ -882,6 +884,89 @@ def resume_mad_scientist_step(slug, mission_id):
     step_id = int(step_raw) if step_raw.isdigit() else None
     try:
         mad_scientist.resume_blocked_step(mission_id, step_id=step_id)
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+    resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
+def _mission_owned(slug, mission_id):
+    ws = models.get_workspace(slug)
+    if ws is None:
+        return None, ("Workspace not found", 404)
+    graph_mission = models.get_mad_scientist_mission_for_mission(mission_id)
+    if graph_mission is None or graph_mission["workspace_id"] != ws["id"]:
+        return None, ("Mad Scientist mission not found for this workspace", 404)
+    return ws, None
+
+
+@app.route(
+    "/workspaces/<slug>/mad-scientist/<int:mission_id>/install-dependency",
+    methods=["POST"],
+)
+def install_dependency_and_retry(slug, mission_id):
+    """Approval-gated interpreter-scoped package install, then resume the step."""
+    ws, err = _mission_owned(slug, mission_id)
+    if err:
+        return err[0], err[1]
+    step_raw = (request.form.get("step_id") or "").strip()
+    if not step_raw.isdigit():
+        return "step_id required", 400
+    module = (request.form.get("module") or "").strip() or None
+    try:
+        dependency_recovery.run_approved_install(
+            mission_id, int(step_raw), module=module
+        )
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+    resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
+@app.route(
+    "/workspaces/<slug>/mad-scientist/<int:mission_id>/retry-without-install",
+    methods=["POST"],
+)
+def retry_without_dependency_install(slug, mission_id):
+    ws, err = _mission_owned(slug, mission_id)
+    if err:
+        return err[0], err[1]
+    step_raw = (request.form.get("step_id") or "").strip()
+    if not step_raw.isdigit():
+        return "step_id required", 400
+    try:
+        dependency_recovery.retry_without_install(mission_id, int(step_raw))
+    except ValueError as exc:
+        resp = make_response(f"<p class='form-error'>{exc}</p>")
+        resp.headers["HX-Retarget"] = "#mad-scientist-error"
+        resp.headers["HX-Reswap"] = "innerHTML"
+        return resp
+    resp = make_response(render_template("partials/mission_list.html", **_mission_list_context(ws)))
+    resp.headers["HX-Trigger"] = "runRefresh"
+    return resp
+
+
+@app.route(
+    "/workspaces/<slug>/mad-scientist/<int:mission_id>/dismiss-install",
+    methods=["POST"],
+)
+def dismiss_dependency_install(slug, mission_id):
+    ws, err = _mission_owned(slug, mission_id)
+    if err:
+        return err[0], err[1]
+    step_raw = (request.form.get("step_id") or "").strip()
+    if not step_raw.isdigit():
+        return "step_id required", 400
+    try:
+        dependency_recovery.dismiss_install_offer(mission_id, int(step_raw))
     except ValueError as exc:
         resp = make_response(f"<p class='form-error'>{exc}</p>")
         resp.headers["HX-Retarget"] = "#mad-scientist-error"

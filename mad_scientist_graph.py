@@ -915,7 +915,7 @@ def _display_status(step, done_ids: set[int]) -> str:
     return status
 
 
-def _attempt_public(attempt) -> dict:
+def _attempt_public(attempt, *, repo_path: str | None = None) -> dict:
     import verification_display
 
     run = models.get_run(attempt["run_id"])
@@ -927,13 +927,35 @@ def _attempt_public(attempt) -> dict:
     }
     status = run["status"] if run is not None else attempt["status"]
     error = ""
+    cwd = repo_path
     if run is not None:
         error = str(run["error"] or "").strip()
+        if cwd is None:
+            workspace = models.get_workspace_by_id(run["workspace_id"])
+            if workspace is not None:
+                cwd = workspace["repo_path"]
     try:
         epoch = int(attempt["breaker_epoch"] or 0)
     except (KeyError, IndexError, TypeError, ValueError):
         epoch = 0
-    verification = verification_display.verification_view(run) if run is not None else None
+    verification = (
+        verification_display.verification_view(run, repo_path=cwd)
+        if run is not None else None
+    )
+    install_offer = None
+    if run is not None:
+        payload = models.get_run_payload(run["id"]) or {}
+        raw_offer = payload.get("install_offer")
+        if isinstance(raw_offer, dict) and raw_offer.get("status") in (None, "pending", "failed"):
+            install_offer = raw_offer
+        elif verification and verification.get("installable"):
+            install_offer = {
+                "module": verification.get("missing_module"),
+                "interpreter": verification.get("interpreter"),
+                "install_command": verification.get("install_command"),
+                "cwd": verification.get("cwd"),
+                "status": "pending",
+            }
     return {
         "id": attempt["id"],
         "run_id": attempt["run_id"],
@@ -946,6 +968,7 @@ def _attempt_public(attempt) -> dict:
         "approval": approval,
         "approval_available": bool(approval.get("approval_available")),
         "verification": verification,
+        "install_offer": install_offer,
     }
 
 
@@ -963,8 +986,18 @@ def mission_view(mission_id: int) -> dict | None:
     scout_failed = False
     non_scout_started = False
     waiting_approvals = []
+    pending_installs = []
+    mission = models.get_mission(mission_id)
+    repo_path = None
+    if mission is not None:
+        workspace = models.get_workspace_by_id(mission["workspace_id"])
+        if workspace is not None:
+            repo_path = workspace["repo_path"]
     for step in raw_steps:
-        attempts = [_attempt_public(item) for item in list_attempts(step["id"])]
+        attempts = [
+            _attempt_public(item, repo_path=repo_path)
+            for item in list_attempts(step["id"])
+        ]
         actionable_attempts = [item for item in attempts if item["approval_available"]]
         actionable = actionable_attempts[-1] if actionable_attempts else None
         awaiting = next(
@@ -983,10 +1016,17 @@ def mission_view(mission_id: int) -> dict | None:
                 break
         waiting_approvals.extend(actionable_attempts)
         latest_verification = None
+        install_offer = None
         for item in reversed(attempts):
-            if item.get("verification"):
+            if item.get("verification") and latest_verification is None:
                 latest_verification = item["verification"]
-                break
+            if item.get("install_offer") and install_offer is None:
+                install_offer = dict(item["install_offer"])
+                install_offer["step_id"] = step["id"]
+                install_offer["step_name"] = step["name"]
+                install_offer["run_id"] = item["run_id"]
+        if install_offer and step["status"] in (BLOCKED_HUMAN, "failed"):
+            pending_installs.append(install_offer)
         steps.append({
             "id": step["id"],
             "name": step["name"],
@@ -998,6 +1038,7 @@ def mission_view(mission_id: int) -> dict | None:
             "blocked_reason": step["blocked_reason"],
             "failure_reason": failure_reason,
             "verification": latest_verification,
+            "install_offer": install_offer,
             "breaker_epoch": step_breaker_epoch(step),
             "attempt_count": len(attempts),
             "attempts": attempts,
@@ -1019,7 +1060,6 @@ def mission_view(mission_id: int) -> dict | None:
             scout_failed = True
         if step["role"] != "scout" and step["status"] != "planned":
             non_scout_started = True
-    mission = models.get_mission(mission_id)
     can_retry_scout = bool(
         mission
         and mission["status"] in ("failed", "aborted")
@@ -1046,6 +1086,7 @@ def mission_view(mission_id: int) -> dict | None:
         "waiting_approval_count": len(waiting_approvals),
         "pending_patch_count": pending_patch_count,
         "needs_human_approval": bool(waiting_approvals),
+        "pending_installs": pending_installs,
         "steps": steps,
         "can_retry_scout": can_retry_scout,
         "resumable_steps": resumable,

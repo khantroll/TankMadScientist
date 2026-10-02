@@ -297,6 +297,18 @@ def _fixer_step(failed_step: dict | None, failed_run, attempt: int, max_loops: i
     failed_name = failed_run["stage_name"] or "previous step"
     original_task = (failed_step or {}).get("task") or failed_run["task"]
     provider = (failed_step or {}).get("provider") or failed_run["provider"]
+    workspace = models.get_workspace_by_id(failed_run["workspace_id"])
+    repo_path = workspace["repo_path"] if workspace is not None else None
+    try:
+        import verification_display
+
+        failure_context = verification_display.fixer_failure_context(
+            failed_run, repo_path=repo_path
+        )
+    except Exception:
+        failure_context = (
+            f"Prior error: {str(failed_run['error'] or '').strip() or '(none)'}"
+        )
     return {
         "name": f"Fix {failed_name} (attempt {attempt})",
         "role": "fixer",
@@ -307,6 +319,10 @@ def _fixer_step(failed_step: dict | None, failed_run, attempt: int, max_loops: i
             "changes needed to unblock the original step. Do not only audit and do not "
             "return a generic plan when implementation is required.\n\n"
             f"Original failed task:\n{original_task}\n\n"
+            f"{failure_context}\n\n"
+            "If Tank classifies this as an import/execution-context failure, inspect the "
+            "test import, application module layout, and working directory before changing "
+            "code. Do not invent a pip install for a local project module such as 'app'.\n\n"
             f"This is fix attempt {attempt} of {max_loops}. Return patch JSON through "
             "the normal Tank local_agent schema when file changes are needed."
         ),
@@ -1133,6 +1149,44 @@ def _advance_graph_locked(run, mission) -> bool:
             note = f"Step '{step_row['name']}' ended with status failed."
             _fail_graph_mission(mission, plan, run, note, step_id=step_row["id"])
             return True
+
+        # Missing third-party packages wait for an approval-gated install instead
+        # of burning fixer attempts on an environment problem.
+        try:
+            import dependency_recovery
+            import verification_display
+
+            offer = dependency_recovery.attach_install_offer(
+                run["id"], workspace["repo_path"]
+            )
+            view = verification_display.verification_view(
+                run, repo_path=workspace["repo_path"]
+            ) or {}
+            if offer or (view.get("installable") and view.get("missing_module")):
+                module = (offer or view).get("module") or view.get("missing_module")
+                interpreter = (offer or view).get("interpreter") or view.get("interpreter") or "active interpreter"
+                reason = (
+                    f"Missing dependency '{module}' in {interpreter}. "
+                    "Approve install to continue, or retry/handle manually."
+                )
+                graph.block_step(step_row["id"], reason)
+                models.update_mission(mission["id"], note=reason)
+                _append_parent_log(mission, f"[tank] BLOCKED_HUMAN: {reason}")
+                try:
+                    import arsenal
+
+                    arsenal.record_verification_lesson(
+                        workspace["id"],
+                        run,
+                        mission_id=mission["id"],
+                        blocked_reason=reason,
+                    )
+                except Exception:
+                    pass
+                _continue_graph(workspace, mission, graph_row, plan, run, run["id"])
+                return True
+        except Exception:
+            pass
 
         if _halt_before_next_attempt(
             workspace, mission, plan, run, step_row, run["id"]

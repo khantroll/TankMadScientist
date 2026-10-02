@@ -53,6 +53,12 @@
       </div>
     {% endif %}
 
+    {% if g and g.pending_installs %}
+      {% for install_offer in g.pending_installs %}
+        {% include "partials/install_offer.html" %}
+      {% endfor %}
+    {% endif %}
+
     {% if g and g.can_resume_blocked and g.resumable_steps %}
       <div class="mission-action-required mission-action-required--resume">
         <div class="mission-action-label">BLOCKED · RESUME AVAILABLE</div>
@@ -208,6 +214,11 @@
           {% if step.verification and (step.display_status in ('blocked', 'failed') or step.verification.exit_code not in (none, 0)) %}
             {% with verification=step.verification %}
               {% include "partials/verification_failure.html" %}
+            {% endwith %}
+          {% endif %}
+          {% if step.install_offer and step.display_status in ('blocked', 'failed') %}
+            {% with install_offer=step.install_offer %}
+              {% include "partials/install_offer.html" %}
             {% endwith %}
           {% endif %}
           {% if step.attempts %}

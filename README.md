@@ -301,8 +301,9 @@ workspace `.venv` / `venv`) when pytest is not on PATH, and that a failed
 verify stores a short output snippet on the run. Run
 `python scripts/validate_observability.py` to check mission-scoped bulk
 approval, mission debrief, Arsenal assets/lessons, blocked-step resume
-(preserving completed nodes and retry history), and verification failure
-classification.
+(preserving completed nodes and retry history), verification failure
+classification (including local `app` vs third-party `pytest`), and
+approval-gated dependency install offers.
 
 ## Production deployment
 

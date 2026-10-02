@@ -118,10 +118,15 @@
     </section>
     {% endif %}
 
-    {% if debrief.pending_approval_count %}
+    {% if debrief.pending_approval_count or debrief.pending_installs %}
     <section class="debrief-section">
       <h5>Pending</h5>
-      <p>Approve {{ debrief.pending_approval_count }} change{{ 's' if debrief.pending_approval_count != 1 else '' }}</p>
+      {% if debrief.pending_approval_count %}
+        <p>Approve {{ debrief.pending_approval_count }} change{{ 's' if debrief.pending_approval_count != 1 else '' }}</p>
+      {% endif %}
+      {% for offer in debrief.pending_installs or [] %}
+        <p>Install {{ offer.module }} (approval-gated){% if offer.step_name %} for {{ offer.step_name }}{% endif %}</p>
+      {% endfor %}
     </section>
     {% endif %}
   </div>

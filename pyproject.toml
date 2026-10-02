@@ -64,6 +64,7 @@ include-package-data = true
     "templates/partials/approval_controls.html",
     "templates/partials/crew_step_row.html",
     "templates/partials/git_result.html",
+    "templates/partials/install_offer.html",
     "templates/partials/mission_debrief.html",
     "templates/partials/mission_list.html",
     "templates/partials/provider_probe.html",

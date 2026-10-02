@@ -156,14 +156,30 @@ def verification_failure_text(code: int, output: str | None = None) -> str:
     return message
 
 
+def apply_verification_metadata(payload: dict, code: int, *, cwd: str | None = None) -> dict:
+    """Copy cwd / resolved command from a CommandResult onto the run payload."""
+    body = dict(payload or {})
+    resolved = getattr(code, "command", "") or ""
+    result_cwd = getattr(code, "cwd", "") or cwd or ""
+    if resolved:
+        body["verification_command_resolved"] = resolved
+    if result_cwd:
+        body["verification_cwd"] = result_cwd
+    return body
+
+
 class CommandResult(int):
-    """Exit code that also carries captured command output."""
+    """Exit code that also carries captured command output and verify metadata."""
 
     output: str
+    cwd: str
+    command: str
 
-    def __new__(cls, code: int, output: str = ""):
+    def __new__(cls, code: int, output: str = "", *, cwd: str = "", command: str = ""):
         obj = int.__new__(cls, int(code))
         obj.output = output or ""
+        obj.cwd = cwd or ""
+        obj.command = command or ""
         return obj
 
 
@@ -582,7 +598,9 @@ def _run_tests_tool(
     if repo_error:
         _log(log_path, f"[tank] error: {repo_error}\n")
         return CommandResult(1, repo_error)
-    _log(log_path, f"[tank] running tests: {repo_context.format_test_command(cmd, repo_path)}\n")
+    resolved = repo_context.format_test_command(cmd, repo_path)
+    _log(log_path, f"[tank] running tests: {resolved}\n")
+    _log(log_path, f"[tank] test cwd: {repo_path}\n")
     run_target, use_shell = repo_context.prepare_test_execution(cmd, repo_path)
     try:
         result = subprocess.run(
@@ -595,11 +613,11 @@ def _run_tests_tool(
     except NotADirectoryError:
         message = f"repository path is not a valid directory: {repo_path}"
         _log(log_path, f"[tank] error: {message}\n")
-        return CommandResult(1, message)
+        return CommandResult(1, message, cwd=repo_path, command=resolved)
     except OSError as exc:
         message = redact_command_output(str(exc))
         _log(log_path, f"[tank] error: {message}\n")
-        return CommandResult(1, message)
+        return CommandResult(1, message, cwd=repo_path, command=resolved)
     redacted_out = redact_command_output(result.stdout or "")
     redacted_err = redact_command_output(result.stderr or "")
     if redacted_out:
@@ -607,7 +625,12 @@ def _run_tests_tool(
     if redacted_err:
         _log(log_path, redacted_err)
     _log(log_path, f"[tank] test exit code: {result.returncode}\n")
-    return CommandResult(result.returncode, _captured_streams(redacted_err, redacted_out))
+    return CommandResult(
+        result.returncode,
+        _captured_streams(redacted_err, redacted_out),
+        cwd=repo_path,
+        command=resolved,
+    )
 
 
 def _run_git_diff_tool(

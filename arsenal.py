@@ -140,27 +140,33 @@ def record_verification_lesson(
             source="verification",
             details={"interpreter": interpreter},
         )
-    if classification == "missing_dependency" and snippet:
-        lowered = snippet.lower()
-        if "pytest" in lowered:
+    module = details.get("missing_module")
+    if classification == "missing_dependency" and (snippet or module):
+        if module:
             record_lesson(
                 workspace_id,
-                "pytest is not installed in the active Python environment",
+                f"{module} is not installed in the active Python environment",
                 "environment",
                 mission_id=mission_id,
                 run_id=run_id,
                 source="verification",
-                details={"command": command, "snippet": snippet},
+                details={
+                    "command": command,
+                    "module": module,
+                    "install_command": details.get("install_command"),
+                    "interpreter": interpreter,
+                },
             )
-            record_lesson(
-                workspace_id,
-                "invoke Python verification through the interpreter (python -m pytest) when pytest is available",
-                "verification",
-                mission_id=mission_id,
-                run_id=run_id,
-                source="verification",
-                details={"command": command},
-            )
+            if module.lower() == "pytest":
+                record_lesson(
+                    workspace_id,
+                    "invoke Python verification through the interpreter (python -m pytest) when pytest is available",
+                    "verification",
+                    mission_id=mission_id,
+                    run_id=run_id,
+                    source="verification",
+                    details={"command": command},
+                )
         else:
             record_lesson(
                 workspace_id,
@@ -170,6 +176,37 @@ def record_verification_lesson(
                 run_id=run_id,
                 source="verification",
                 details={"command": command, "classification": classification},
+            )
+    elif classification == "import_context_failure":
+        record_lesson(
+            workspace_id,
+            (
+                f"'{module}' in this repository is a local project module and must not "
+                "be treated as an external package candidate"
+                if module else
+                "Verification failed with a local import/execution-context error"
+            ),
+            "repo",
+            mission_id=mission_id,
+            run_id=run_id,
+            source="verification",
+            details={
+                "command": command,
+                "cwd": details.get("cwd"),
+                "module": module,
+                "classification": classification,
+                "snippet": snippet[:360] if snippet else None,
+            },
+        )
+        if details.get("cwd"):
+            record_lesson(
+                workspace_id,
+                f"Verification working directory: {details['cwd']}",
+                "verification",
+                mission_id=mission_id,
+                run_id=run_id,
+                source="verification",
+                details={"cwd": details.get("cwd"), "command": command},
             )
     elif command and (classification in ("code_failure", "environment_failure", "unknown")):
         record_lesson(

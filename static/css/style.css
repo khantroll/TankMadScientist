@@ -687,6 +687,20 @@ textarea { font-family: var(--font-mono); min-height: 70px; resize: vertical; }
   border-color: var(--red);
 }
 
+.verify-class--import_context_failure {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+.install-offer {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  background: rgba(212, 160, 23, 0.1);
+  flex-basis: 100%;
+}
+
 .arsenal-layout {
   display: grid;
   grid-template-columns: 1fr;

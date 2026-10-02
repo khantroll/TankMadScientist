@@ -68,6 +68,10 @@ def extract_run_output(run, max_bytes: int | None = None) -> str | None:
             if patch_paths:
                 parts.append(f"Proposed patches: {', '.join(patch_paths)}")
 
+    error = str(run["error"] or "").strip()
+    if error and run["status"] in ("failed", "rejected", "cancelled"):
+        parts.append(f"Error:\n{error}")
+
     log_path = run["log_path"]
     has_structured = bool(payload and (payload.get("plan") or "").strip())
     if log_path and os.path.exists(log_path) and not has_structured:
@@ -87,9 +91,21 @@ def build_prior_context(parent_run_id: int, max_bytes: int | None = None) -> str
     if run is None:
         return None
     output = extract_run_output(run, max_bytes=max_bytes)
-    if not output:
+    workspace = models.get_workspace_by_id(run["workspace_id"])
+    repo_path = workspace["repo_path"] if workspace is not None else None
+    failure_context = ""
+    if run["status"] in ("failed", "rejected"):
+        try:
+            import verification_display
+
+            failure_context = verification_display.fixer_failure_context(
+                run, repo_path=repo_path
+            )
+        except Exception:
+            failure_context = ""
+    if not output and not failure_context:
         return None
-    if output_quality.looks_like_meta_plan(output):
+    if output and output_quality.looks_like_meta_plan(output):
         header = (
             f"Prior run #{run['id']} ({run['status']}) — NOTE: prior output was a checklist, "
             f"not real findings. Prefer the repository files below over this prior output.\n"
@@ -100,7 +116,10 @@ def build_prior_context(parent_run_id: int, max_bytes: int | None = None) -> str
             f"Prior run #{run['id']} ({run['status']}, provider={run['provider'] or 'unknown'})\n"
             f"Prior task: {run['task']}\n"
         )
-    return f"{header}\n{output}"
+    body = output or ""
+    if failure_context:
+        body = f"{failure_context}\n\n{body}".strip()
+    return f"{header}\n{body}"
 
 
 def resolve_parent_run_id(run) -> int | None:

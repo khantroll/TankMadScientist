@@ -74,9 +74,11 @@ def build_debrief(mission_id: int) -> dict | None:
     blockers = []
     circuit_events = []
     pending_approvals = []
+    pending_installs = []
 
     if view:
         pending_approvals = list(view.get("waiting_approvals") or [])
+        pending_installs = list(view.get("pending_installs") or [])
         if view.get("blocked_reason"):
             blockers.append(view["blocked_reason"])
         for step in view.get("steps") or []:
@@ -195,5 +197,6 @@ def build_debrief(mission_id: int) -> dict | None:
         "successful_patterns": patterns,
         "pending_approvals": pending_approvals,
         "pending_approval_count": len(pending_approvals),
+        "pending_installs": pending_installs,
         "summary": (view or {}).get("summary") or "",
     }

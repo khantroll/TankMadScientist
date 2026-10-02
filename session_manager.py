@@ -307,6 +307,9 @@ def approve_run(run_id):
             workspace=dict(workspace), authorized_tools=authorized,
         )
         payload["tool_exit_code"] = int(code)
+        payload = local_agent.apply_verification_metadata(
+            payload, code, cwd=workspace["repo_path"]
+        )
         import mad_scientist_graph as graph
 
         attempt = graph.get_attempt_by_run(run_id)
@@ -331,6 +334,13 @@ def approve_run(run_id):
             finished_at=_now(),
             agent_payload=json.dumps(payload),
         )
+        if status == "failed" and code != 0:
+            try:
+                import dependency_recovery
+
+                dependency_recovery.attach_install_offer(run_id, workspace["repo_path"])
+            except Exception:
+                pass
     except Exception as exc:
         local_agent._log(run["log_path"], f"[tank] apply failed: {exc}\n")
         models.update_run(
